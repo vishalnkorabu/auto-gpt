@@ -1,0 +1,29 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from langchain_community.vectorstores import FAISS
+from langchain_core.documents import Document
+from langchain_openai import OpenAIEmbeddings
+
+from .models import SourceDocument
+
+
+class SourceIndexer:
+    def __init__(self, api_key: str) -> None:
+        self.embeddings = OpenAIEmbeddings(api_key=api_key)
+
+    def build(self, docs: list[SourceDocument], output_dir: Path) -> None:
+        if not docs:
+            return
+
+        lc_docs = [
+            Document(
+                page_content=d.content or d.snippet,
+                metadata={"title": d.title, "url": d.url, "type": d.source_type},
+            )
+            for d in docs
+        ]
+        db = FAISS.from_documents(lc_docs, self.embeddings)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        db.save_local(str(output_dir))
