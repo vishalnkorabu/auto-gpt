@@ -102,12 +102,20 @@ class MultiAgentOrchestrator:
     def _researcher_node(self, state: AgentState) -> AgentState:
         all_sources: list[SourceDocument] = []
 
-        per_query_web = max(1, self.settings.max_web_results // max(1, len(state["planned_queries"])))
-        per_query_paper = max(1, self.settings.max_paper_results // max(1, len(state["planned_queries"])))
+        query_count = max(1, len(state["planned_queries"]))
+        per_query_web = max(0, self.settings.max_web_results // query_count)
+        per_query_paper = max(0, self.settings.max_paper_results // query_count)
+
+        if self.settings.max_web_results > 0 and per_query_web == 0:
+            per_query_web = 1
+        if self.settings.max_paper_results > 0 and per_query_paper == 0:
+            per_query_paper = 1
 
         for q in state["planned_queries"]:
-            all_sources.extend(self.web_provider.search(q, per_query_web))
-            all_sources.extend(self.paper_provider.search(q, per_query_paper))
+            if per_query_web > 0:
+                all_sources.extend(self.web_provider.search(q, per_query_web))
+            if per_query_paper > 0:
+                all_sources.extend(self.paper_provider.search(q, per_query_paper))
 
         deduped = _dedupe_sources(all_sources)
         return {**state, "sources": deduped}

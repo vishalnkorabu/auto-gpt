@@ -19,6 +19,8 @@ class TavilySearchProvider(WebSearchProvider):
         self.api_key = api_key
 
     def search(self, query: str, limit: int) -> list[SourceDocument]:
+        if limit <= 0:
+            return []
         response = requests.post(
             "https://api.tavily.com/search",
             json={
@@ -52,6 +54,8 @@ class SerpApiSearchProvider(WebSearchProvider):
         self.api_key = api_key
 
     def search(self, query: str, limit: int) -> list[SourceDocument]:
+        if limit <= 0:
+            return []
         response = requests.get(
             "https://serpapi.com/search.json",
             params={"q": query, "engine": "google", "api_key": self.api_key, "num": limit},
@@ -78,13 +82,20 @@ class SerpApiSearchProvider(WebSearchProvider):
 
 class SemanticScholarSearchProvider:
     def search(self, query: str, limit: int) -> list[SourceDocument]:
-        response = requests.get(
-            "https://api.semanticscholar.org/graph/v1/paper/search",
-            params={"query": query, "limit": limit, "fields": "title,url,abstract"},
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
+        if limit <= 0:
+            return []
+        try:
+            response = requests.get(
+                "https://api.semanticscholar.org/graph/v1/paper/search",
+                params={"query": query, "limit": limit, "fields": "title,url,abstract"},
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException:
+            # Semantic Scholar can frequently rate-limit anonymous requests (HTTP 429).
+            # Gracefully continue with web sources instead of failing the full run.
+            return []
         papers = payload.get("data", [])
 
         documents: list[SourceDocument] = []

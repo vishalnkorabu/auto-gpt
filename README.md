@@ -83,4 +83,5 @@ The output directory will include:
 - `--mode single` runs the legacy single-pass workflow.
 - `--dry-run` skips all external APIs and writes deterministic mock outputs for testing.
 - LLM provider defaults to Groq (`LLM_PROVIDER=groq`), with optional OpenAI fallback.
+- Set `MAX_PAPER_RESULTS=0` to disable Semantic Scholar paper search when rate-limited.
 - You can still swap providers and extend orchestration behavior in `agent.py` and `multi_agent.py`.
