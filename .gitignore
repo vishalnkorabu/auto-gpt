@@ -6,3 +6,7 @@ data/
 reports/
 .pytest_cache/
 .mypy_cache/
+frontend/node_modules/
+frontend/dist/
+*.egg-info/
+reportsgroq-run/

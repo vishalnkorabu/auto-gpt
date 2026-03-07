@@ -7,6 +7,7 @@ from pathlib import Path
 from .config import Settings
 from .models import ResearchReport, SourceDocument, SourceSummary
 from .multi_agent import MultiAgentOrchestrator
+from .quality import filter_high_quality_sources
 from .report_generator import ReportGenerator
 from .search import (
     SemanticScholarSearchProvider,
@@ -48,6 +49,7 @@ class ResearchAgent:
         web_docs = self.web_provider.search(query, self.settings.max_web_results)
         paper_docs = self.paper_provider.search(query, self.settings.max_paper_results)
         sources = _dedupe_sources(web_docs + paper_docs)
+        sources = filter_high_quality_sources(sources)
 
         summaries = [self.summarizer.summarize_source(i + 1, doc) for i, doc in enumerate(sources)]
         report_md = self.report_generator.generate(query, summaries, sources)

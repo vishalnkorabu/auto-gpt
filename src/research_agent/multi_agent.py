@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import Settings
 from .llm import LLMClient
 from .models import SourceDocument, SourceSummary
+from .quality import filter_high_quality_sources
 from .report_generator import ReportGenerator
 from .search import SemanticScholarSearchProvider, WebSearchProvider
 from .summarizer import LLMSummarizer
@@ -118,6 +119,7 @@ class MultiAgentOrchestrator:
                 all_sources.extend(self.paper_provider.search(q, per_query_paper))
 
         deduped = _dedupe_sources(all_sources)
+        deduped = filter_high_quality_sources(deduped)
         return {**state, "sources": deduped}
 
     def _analyst_node(self, state: AgentState) -> AgentState:
