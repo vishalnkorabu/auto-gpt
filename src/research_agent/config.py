@@ -8,25 +8,48 @@ from dotenv import load_dotenv
 
 @dataclass
 class Settings:
-    openai_api_key: str
-    openai_model: str
+    llm_provider: str
+    llm_api_key: str
+    llm_model: str
+    llm_base_url: str | None
     tavily_api_key: str | None
     serpapi_api_key: str | None
+    embedding_model: str
     max_web_results: int
     max_paper_results: int
+    max_planned_queries: int
 
 
-def load_settings() -> Settings:
+def load_settings(require_api_keys: bool = True) -> Settings:
     load_dotenv()
+    llm_provider = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+    groq_api_key = os.getenv("GROQ_API_KEY", "").strip()
     openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    if not openai_api_key:
-        raise ValueError("OPENAI_API_KEY is required.")
+
+    if llm_provider == "groq":
+        llm_api_key = groq_api_key
+        llm_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
+        llm_base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").strip()
+        if require_api_keys and not llm_api_key:
+            raise ValueError("GROQ_API_KEY is required when LLM_PROVIDER=groq.")
+    elif llm_provider == "openai":
+        llm_api_key = openai_api_key
+        llm_model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip()
+        llm_base_url = os.getenv("OPENAI_BASE_URL", "").strip() or None
+        if require_api_keys and not llm_api_key:
+            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai.")
+    else:
+        raise ValueError("LLM_PROVIDER must be one of: groq, openai.")
 
     return Settings(
-        openai_api_key=openai_api_key,
-        openai_model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini").strip(),
+        llm_provider=llm_provider,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
         tavily_api_key=os.getenv("TAVILY_API_KEY", "").strip() or None,
         serpapi_api_key=os.getenv("SERPAPI_API_KEY", "").strip() or None,
+        embedding_model=os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2").strip(),
         max_web_results=int(os.getenv("MAX_WEB_RESULTS", "6")),
         max_paper_results=int(os.getenv("MAX_PAPER_RESULTS", "4")),
+        max_planned_queries=int(os.getenv("MAX_PLANNED_QUERIES", "4")),
     )

@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
 from .models import SourceDocument
 
 
 class SourceIndexer:
-    def __init__(self, api_key: str) -> None:
-        self.embeddings = OpenAIEmbeddings(api_key=api_key)
+    def __init__(self, embedding_model: str) -> None:
+        self.embeddings = HuggingFaceEmbeddings(model_name=embedding_model)
 
     def build(self, docs: list[SourceDocument], output_dir: Path) -> None:
         if not docs:

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from openai import OpenAI
-
+from .llm import LLMClient
 from .models import SourceDocument, SourceSummary
 
 
 class LLMSummarizer:
-    def __init__(self, api_key: str, model: str) -> None:
-        self.client = OpenAI(api_key=api_key)
-        self.model = model
+    def __init__(self, api_key: str, model: str, base_url: str | None = None) -> None:
+        self.client = LLMClient(api_key=api_key, model=model, base_url=base_url)
 
     def summarize_source(self, source_id: int, doc: SourceDocument) -> SourceSummary:
         prompt = (
@@ -16,12 +14,7 @@ class LLMSummarizer:
             f"Title: {doc.title}\nURL: {doc.url}\n"
             f"Content:\n{doc.content[:6000]}"
         )
-        response = self.client.responses.create(
-            model=self.model,
-            input=prompt,
-            temperature=0.2,
-        )
-        text = response.output_text.strip()
+        text = self.client.generate(prompt=prompt, temperature=0.2)
 
         points = []
         for line in text.splitlines():
