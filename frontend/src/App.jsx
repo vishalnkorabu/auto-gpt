@@ -1,15 +1,64 @@
 import { useEffect, useRef, useState } from "react";
 
+const SESSION_KEY = "research-agent-session-id";
+
 export default function App() {
   const [messages, setMessages] = useState([]);
+  const [sessions, setSessions] = useState([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState("multi");
   const [dryRun, setDryRun] = useState(false);
   const [drawerReport, setDrawerReport] = useState(null);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
   const pollRef = useRef(null);
 
-  useEffect(() => () => window.clearInterval(pollRef.current), []);
+  useEffect(() => {
+    void loadSessions();
+    const stored = window.localStorage.getItem(SESSION_KEY);
+    if (stored) {
+      void loadSessionMessages(stored);
+    }
+    return () => window.clearInterval(pollRef.current);
+  }, []);
+
+  async function loadSessions() {
+    const res = await fetch("/api/sessions");
+    const data = await res.json();
+    if (res.ok) {
+      setSessions(data.sessions || []);
+    }
+  }
+
+  async function loadSessionMessages(sessionId) {
+    const res = await fetch(`/api/sessions/${sessionId}/messages`);
+    const data = await res.json();
+    if (!res.ok) {
+      window.localStorage.removeItem(SESSION_KEY);
+      setCurrentSessionId(null);
+      setMessages([]);
+      return;
+    }
+
+    setCurrentSessionId(sessionId);
+    setMode(data.session.mode);
+    setDryRun(data.session.dry_run);
+    setMessages(
+      (data.messages || []).map((message) =>
+        message.role === "assistant"
+          ? { id: message.id, role: "assistant", payload: message, text: message.text }
+          : { id: message.id, role: "user", text: message.text }
+      )
+    );
+    window.localStorage.setItem(SESSION_KEY, sessionId);
+  }
+
+  async function startNewSession() {
+    setCurrentSessionId(null);
+    setMessages([]);
+    window.localStorage.removeItem(SESSION_KEY);
+    await loadSessions();
+  }
 
   async function sendQuery(event) {
     event.preventDefault();
@@ -24,12 +73,21 @@ export default function App() {
       const startRes = await fetch("/api/chat/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: trimmed, mode, dry_run: dryRun }),
+        body: JSON.stringify({
+          query: trimmed,
+          mode,
+          dry_run: dryRun,
+          session_id: currentSessionId,
+        }),
       });
       const startData = await startRes.json();
       if (!startRes.ok) {
         throw new Error(startData.detail || "Unable to start research job");
       }
+
+      setCurrentSessionId(startData.session_id);
+      window.localStorage.setItem(SESSION_KEY, startData.session_id);
+      await loadSessions();
 
       const loadingId = `${startData.job_id}-loading`;
       setMessages((prev) => [
@@ -67,11 +125,12 @@ export default function App() {
         setMessages((prev) =>
           prev.flatMap((msg) =>
             msg.id === loadingId
-              ? [{ role: "assistant", payload: data.result, text: data.result.answer }]
+              ? [{ role: "assistant", payload: data.result, text: data.result.text }]
               : [msg]
           )
         );
         setLoading(false);
+        await loadSessions();
       } else if (data.state === "failed") {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -97,54 +156,81 @@ export default function App() {
   }
 
   return (
-    <div className="app">
-      <header className="topbar">
-        <div>
-          <h1>AI Research Agent</h1>
-          <p className="topline">Research-grade answers with live sourcing and traceable sources.</p>
+    <div className="app app-layout">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div>
+            <h2>History</h2>
+            <p>Local conversation sessions saved in SQLite.</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={startNewSession}>
+            New chat
+          </button>
         </div>
-        <div className="controls">
-          <label>
-            Mode
-            <select value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="multi">multi</option>
-              <option value="single">single</option>
-            </select>
-          </label>
-          <label className="checkbox">
-            <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-            Dry run
-          </label>
+        <div className="session-list">
+          {sessions.map((session) => (
+            <button
+              key={session.id}
+              type="button"
+              className={`session-card ${session.id === currentSessionId ? "active" : ""}`}
+              onClick={() => loadSessionMessages(session.id)}
+            >
+              <div className="session-title">{session.title}</div>
+              <div className="session-meta">{new Date(session.updated_at).toLocaleString()}</div>
+            </button>
+          ))}
         </div>
-      </header>
+      </aside>
 
-      <main className="chat">
-        {messages.length === 0 && <p className="placeholder">Ask a research question to start.</p>}
-        {messages.map((msg, index) => (
-          <article key={msg.id || index} className={`bubble ${bubbleClass(msg.role)}`}>
-            <div className="role">{labelForRole(msg.role)}</div>
-            {msg.role === "assistant" && msg.payload ? (
-              <AssistantResponse payload={msg.payload} onOpenSources={() => setDrawerReport(msg.payload.report)} />
-            ) : msg.role === "assistant-loading" ? (
-              <LoadingResponse query={msg.query} progressMessages={msg.progressMessages} />
-            ) : (
-              <pre>{msg.text}</pre>
-            )}
-          </article>
-        ))}
-      </main>
+      <div className="main-pane">
+        <header className="topbar">
+          <div>
+            <h1>AI Research Agent</h1>
+            <p className="topline">Django-backed research chat with persistent local session history.</p>
+          </div>
+          <div className="controls">
+            <label>
+              Mode
+              <select value={mode} onChange={(e) => setMode(e.target.value)}>
+                <option value="multi">multi</option>
+                <option value="single">single</option>
+              </select>
+            </label>
+            <label className="checkbox">
+              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
+              Dry run
+            </label>
+          </div>
+        </header>
 
-      <form className="composer" onSubmit={sendQuery}>
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Impact of AI on healthcare startups"
-          disabled={loading}
-        />
-        <button type="submit" disabled={loading || !query.trim()}>
-          Send
-        </button>
-      </form>
+        <main className="chat">
+          {messages.length === 0 && <p className="placeholder">Ask a research question to start.</p>}
+          {messages.map((msg, index) => (
+            <article key={msg.id || index} className={`bubble ${bubbleClass(msg.role)}`}>
+              <div className="role">{labelForRole(msg.role)}</div>
+              {msg.role === "assistant" && msg.payload ? (
+                <AssistantResponse payload={msg.payload} onOpenSources={() => setDrawerReport(msg.payload.report)} />
+              ) : msg.role === "assistant-loading" ? (
+                <LoadingResponse query={msg.query} progressMessages={msg.progressMessages} />
+              ) : (
+                <pre>{msg.text}</pre>
+              )}
+            </article>
+          ))}
+        </main>
+
+        <form className="composer" onSubmit={sendQuery}>
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Impact of AI on healthcare startups"
+            disabled={loading}
+          />
+          <button type="submit" disabled={loading || !query.trim()}>
+            Send
+          </button>
+        </form>
+      </div>
 
       <SourcesDrawer report={drawerReport} onClose={() => setDrawerReport(null)} />
     </div>
@@ -152,14 +238,14 @@ export default function App() {
 }
 
 function AssistantResponse({ payload, onOpenSources }) {
-  const { report, output_dir: outputDir } = payload;
+  const { report, report_markdown: reportMarkdown } = payload;
 
   return (
     <div className="response">
       <div className="response-header">
         <div>
-          <h2>{report.headline}</h2>
-          <pre className="response-text">{report.response_text}</pre>
+          <h2>{report?.headline || "Research response"}</h2>
+          <pre className="response-text">{report?.response_text || payload.text}</pre>
         </div>
         <div className="action-row">
           <button className="secondary-button" onClick={onOpenSources} type="button">
@@ -167,7 +253,7 @@ function AssistantResponse({ payload, onOpenSources }) {
           </button>
         </div>
       </div>
-      <div className="meta-line">Saved to {outputDir}</div>
+      {reportMarkdown ? <div className="meta-line">Structured report saved for this response.</div> : null}
     </div>
   );
 }

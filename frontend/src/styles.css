@@ -32,9 +32,80 @@ body {
   margin: 0 auto;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto 1fr auto;
   gap: 12px;
   padding: 14px;
+}
+
+.app-layout {
+  grid-template-columns: 300px minmax(0, 1fr);
+  align-items: start;
+}
+
+.main-pane {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 12px;
+}
+
+.sidebar {
+  position: sticky;
+  top: 14px;
+  background: rgba(255, 253, 248, 0.82);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 14px;
+  max-height: calc(100vh - 28px);
+  overflow: auto;
+}
+
+.sidebar-header {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.sidebar-header h2 {
+  margin: 0;
+  font-size: 1.2rem;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.sidebar-header p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.session-list {
+  display: grid;
+  gap: 10px;
+}
+
+.session-card {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.55);
+  padding: 12px;
+  cursor: pointer;
+}
+
+.session-card.active {
+  background: var(--panel-strong);
+  border-color: var(--accent);
+}
+
+.session-title {
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.session-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .topbar {
@@ -415,6 +486,15 @@ select {
 }
 
 @media (max-width: 900px) {
+  .app-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: static;
+    max-height: none;
+  }
+
   .response-header,
   .topbar {
     flex-direction: column;

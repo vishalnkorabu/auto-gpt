@@ -17,7 +17,7 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 
 - Python
 - Groq API (OpenAI-compatible)
-- FastAPI backend + React (Vite) frontend
+- Django backend + SQLite + React (Vite) frontend
 - LangChain + LangGraph + FAISS
 - Web search via Tavily or SerpAPI
 - Research paper search via Semantic Scholar
@@ -27,7 +27,6 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 ```text
 src/research_agent/
   agent.py             # Main orchestration
-  api_server.py        # FastAPI endpoint for chat UI
   cli.py               # CLI entrypoint
   config.py            # Env/settings loader
   models.py            # Dataclasses
@@ -37,10 +36,21 @@ src/research_agent/
   report_generator.py  # Final report generation with citations
   vector_store.py      # FAISS indexing
 
+src/research_agent_django/
+  settings.py          # Django project settings
+  urls.py              # Root URL config
+
+src/research_agent_web/
+  models.py            # SQLite-backed session/job/message tables
+  views.py             # Django JSON API for sessions, jobs, history
+  urls.py              # API routes
+
+manage.py              # Django entrypoint
+
 frontend/
   src/App.jsx          # React chat interface
   src/styles.css       # UI styles
-  vite.config.js       # Dev proxy to FastAPI
+  vite.config.js       # Dev proxy to Django API
 ```
 
 ## Setup
@@ -82,7 +92,8 @@ python -m research_agent.cli --query "Impact of AI on healthcare startups" --mod
 Start backend:
 
 ```bash
-uvicorn research_agent.api_server:app --reload --port 8000
+python manage.py migrate
+python manage.py runserver 8000
 ```
 
 Start frontend (new terminal):
@@ -94,6 +105,22 @@ npm run dev
 ```
 
 Open `http://localhost:5173` and send queries in the chat UI.
+
+## Database Plan
+
+The app now uses a local SQLite database (`db.sqlite3`) through Django ORM.
+
+Tables implemented:
+- `ConversationSession`: one saved chat thread, with title/mode/dry-run metadata
+- `ConversationMessage`: every user/assistant message, including stored report payloads
+- `ResearchJob`: one generation run tied to a session and its initiating user message
+- `JobProgressEvent`: ordered progress messages used by the live generating UI
+
+This schema gives you:
+- persistent chat history across app restarts
+- resumable session list in the UI
+- traceable job progress for the loading state
+- stored assistant outputs and source payloads for later review
 
 The output directory will include:
 - `report.md`
@@ -111,4 +138,5 @@ The output directory will include:
 - LLM provider defaults to Groq (`LLM_PROVIDER=groq`), with optional OpenAI fallback.
 - Set `MAX_PAPER_RESULTS=0` to disable Semantic Scholar paper search when rate-limited.
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
+- Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - You can still swap providers and extend orchestration behavior in `agent.py` and `multi_agent.py`.
