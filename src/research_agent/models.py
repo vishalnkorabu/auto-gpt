@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 
 @dataclass
@@ -27,3 +28,6 @@ class ResearchReport:
     markdown: str
     sources: list[SourceDocument]
     summaries: list[SourceSummary]
+
+
+ProgressCallback = Callable[[str], None]

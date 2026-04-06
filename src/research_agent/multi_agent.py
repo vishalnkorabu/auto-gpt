@@ -7,7 +7,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import Settings
 from .llm import LLMClient
-from .models import SourceDocument, SourceSummary
+from .models import ProgressCallback, SourceDocument, SourceSummary
 from .quality import filter_high_quality_sources
 from .report_generator import ReportGenerator
 from .search import SemanticScholarSearchProvider, WebSearchProvider
@@ -43,8 +43,10 @@ class MultiAgentOrchestrator:
             model=settings.llm_model,
             base_url=settings.llm_base_url,
         )
+        self.progress_callback: ProgressCallback | None = None
 
-    def run(self, query: str) -> AgentState:
+    def run(self, query: str, progress_callback: ProgressCallback | None = None) -> AgentState:
+        self.progress_callback = progress_callback
         graph = self._build_graph()
         compiled = graph.compile()
         return compiled.invoke(
@@ -73,6 +75,7 @@ class MultiAgentOrchestrator:
         return workflow
 
     def _planner_node(self, state: AgentState) -> AgentState:
+        self._emit("Breaking the question into research angles.")
         prompt = (
             "You are a research planner. For the given topic, create a concise plan and search queries.\n"
             "Return strict JSON with keys: plan (string), queries (array of strings).\n"
@@ -93,6 +96,7 @@ class MultiAgentOrchestrator:
         if not queries:
             queries = [state["topic"]]
         queries = queries[: self.settings.max_planned_queries]
+        self._emit(f"Planned {len(queries)} search paths for the topic.")
 
         return {
             **state,
@@ -101,6 +105,7 @@ class MultiAgentOrchestrator:
         }
 
     def _researcher_node(self, state: AgentState) -> AgentState:
+        self._emit("Sourcing the web for answers.")
         all_sources: list[SourceDocument] = []
 
         query_count = max(1, len(state["planned_queries"]))
@@ -113,16 +118,24 @@ class MultiAgentOrchestrator:
             per_query_paper = 1
 
         for q in state["planned_queries"]:
+            self._emit(f"Searching for: {q}")
             if per_query_web > 0:
-                all_sources.extend(self.web_provider.search(q, per_query_web))
+                web_results = self.web_provider.search(q, per_query_web)
+                all_sources.extend(web_results)
+                self._emit(_progress_from_sources(web_results, fallback="Reviewing web pages."))
             if per_query_paper > 0:
-                all_sources.extend(self.paper_provider.search(q, per_query_paper))
+                paper_results = self.paper_provider.search(q, per_query_paper)
+                all_sources.extend(paper_results)
+                if paper_results:
+                    self._emit(_progress_from_sources(paper_results, fallback="Reading published material."))
 
         deduped = _dedupe_sources(all_sources)
         deduped = filter_high_quality_sources(deduped)
+        self._emit(f"Kept {len(deduped)} strong sources after filtering.")
         return {**state, "sources": deduped}
 
     def _analyst_node(self, state: AgentState) -> AgentState:
+        self._emit("Summarizing the collected evidence.")
         summaries = [self.summarizer.summarize_source(i + 1, doc) for i, doc in enumerate(state["sources"])]
 
         synthesis_prompt = (
@@ -133,10 +146,12 @@ class MultiAgentOrchestrator:
             + "\n\n".join([f"[{s.source_id}] {s.title}\n{s.summary}" for s in summaries])
         )
         synthesis = self.client.generate(prompt=synthesis_prompt, temperature=0.2)
+        self._emit("Connecting the evidence into a coherent review.")
 
         return {**state, "summaries": summaries, "analysis": synthesis}
 
     def _writer_node(self, state: AgentState) -> AgentState:
+        self._emit("Generating the final response.")
         report_md = self.report_generator.generate(
             topic=state["topic"],
             summaries=state["summaries"],
@@ -144,7 +159,12 @@ class MultiAgentOrchestrator:
             plan=state["plan"],
             analysis=state["analysis"],
         )
+        self._emit("Packaging charts, sections, and citations.")
         return {**state, "report_markdown": report_md}
+
+    def _emit(self, message: str) -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(message)
 
 
 def _safe_parse_json(text: str) -> Any:
@@ -168,3 +188,12 @@ def _dedupe_sources(sources: list[SourceDocument]) -> list[SourceDocument]:
         seen_urls.add(key)
         deduped.append(source)
     return deduped
+
+
+def _progress_from_sources(sources: list[SourceDocument], fallback: str) -> str:
+    if not sources:
+        return fallback
+    title = sources[0].title.strip()
+    if len(title) > 72:
+        title = title[:69] + "..."
+    return f"Referring to {title}"

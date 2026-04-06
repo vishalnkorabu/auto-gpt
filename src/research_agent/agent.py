@@ -5,7 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .config import Settings
-from .models import ResearchReport, SourceDocument, SourceSummary
+from .models import ProgressCallback, ResearchReport, SourceDocument, SourceSummary
 from .multi_agent import MultiAgentOrchestrator
 from .quality import filter_high_quality_sources
 from .report_generator import ReportGenerator
@@ -29,16 +29,29 @@ class ResearchAgent:
         self.indexer: SourceIndexer | None = None
         self.multi_agent: MultiAgentOrchestrator | None = None
 
-    def run(self, query: str, output_dir: Path, mode: str = "multi", dry_run: bool = False) -> ResearchReport:
+    def run(
+        self,
+        query: str,
+        output_dir: Path,
+        mode: str = "multi",
+        dry_run: bool = False,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchReport:
         if dry_run:
-            return self._run_dry(query=query, output_dir=output_dir, mode=mode)
+            return self._run_dry(query=query, output_dir=output_dir, mode=mode, progress_callback=progress_callback)
 
         self._ensure_runtime()
+        self._emit(progress_callback, "Preparing research workflow.")
         if mode == "single":
-            return self._run_single(query=query, output_dir=output_dir)
-        return self._run_multi(query=query, output_dir=output_dir)
+            return self._run_single(query=query, output_dir=output_dir, progress_callback=progress_callback)
+        return self._run_multi(query=query, output_dir=output_dir, progress_callback=progress_callback)
 
-    def _run_single(self, query: str, output_dir: Path) -> ResearchReport:
+    def _run_single(
+        self,
+        query: str,
+        output_dir: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchReport:
         output_dir.mkdir(parents=True, exist_ok=True)
         assert self.web_provider is not None
         assert self.paper_provider is not None
@@ -46,12 +59,16 @@ class ResearchAgent:
         assert self.report_generator is not None
         assert self.indexer is not None
 
+        self._emit(progress_callback, "Sourcing the web for answers.")
         web_docs = self.web_provider.search(query, self.settings.max_web_results)
+        self._emit(progress_callback, "Checking research papers and articles.")
         paper_docs = self.paper_provider.search(query, self.settings.max_paper_results)
         sources = _dedupe_sources(web_docs + paper_docs)
         sources = filter_high_quality_sources(sources)
+        self._emit(progress_callback, f"Reviewing {len(sources)} high-signal sources.")
 
         summaries = [self.summarizer.summarize_source(i + 1, doc) for i, doc in enumerate(sources)]
+        self._emit(progress_callback, "Drafting the response from summarized evidence.")
         report_md = self.report_generator.generate(query, summaries, sources)
 
         self._save_sources(output_dir / "sources.json", sources)
@@ -61,11 +78,16 @@ class ResearchAgent:
 
         return ResearchReport(topic=query, markdown=report_md, sources=sources, summaries=summaries)
 
-    def _run_multi(self, query: str, output_dir: Path) -> ResearchReport:
+    def _run_multi(
+        self,
+        query: str,
+        output_dir: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchReport:
         output_dir.mkdir(parents=True, exist_ok=True)
         assert self.multi_agent is not None
         assert self.indexer is not None
-        state = self.multi_agent.run(query)
+        state = self.multi_agent.run(query, progress_callback=progress_callback)
         sources = state["sources"]
         summaries = state["summaries"]
         report_md = state["report_markdown"]
@@ -79,9 +101,17 @@ class ResearchAgent:
 
         return ResearchReport(topic=query, markdown=report_md, sources=sources, summaries=summaries)
 
-    def _run_dry(self, query: str, output_dir: Path, mode: str) -> ResearchReport:
+    def _run_dry(
+        self,
+        query: str,
+        output_dir: Path,
+        mode: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ResearchReport:
         output_dir.mkdir(parents=True, exist_ok=True)
+        self._emit(progress_callback, "Running deterministic dry-run workflow.")
         sources = self._mock_sources(query)
+        self._emit(progress_callback, "Synthesizing mock evidence.")
         summaries = self._mock_summaries(sources)
         plan = (
             f"1) Define scope for '{query}'\n"
@@ -92,6 +122,7 @@ class ResearchAgent:
             "Early signals indicate rapid adoption with uneven outcomes across segments. "
             "Main levers are cost reduction, speed, regulatory fit, and integration complexity."
         )
+        self._emit(progress_callback, "Composing the final response.")
         report_md = self._mock_report(query, summaries, sources, plan, analysis)
 
         self._save_sources(output_dir / "sources.json", sources)
@@ -163,6 +194,11 @@ class ResearchAgent:
     @staticmethod
     def _save_analysis(path: Path, analysis: str) -> None:
         path.write_text(analysis, encoding="utf-8")
+
+    @staticmethod
+    def _emit(progress_callback: ProgressCallback | None, message: str) -> None:
+        if progress_callback is not None:
+            progress_callback(message)
 
     @staticmethod
     def _mock_sources(query: str) -> list[SourceDocument]:
