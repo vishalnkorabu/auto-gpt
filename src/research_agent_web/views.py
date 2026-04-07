@@ -1,22 +1,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from pathlib import Path
 from threading import Thread
 from uuid import UUID
 
+from django.conf import settings
+from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth.models import User
 from django.db import transaction
 from django.http import HttpRequest, JsonResponse
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from research_agent.agent import ResearchAgent
-from research_agent.config import load_settings
-from research_agent.presentation import build_presentable_report
-
-from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob, SavedReport
+from .models import ConversationMessage, ConversationSession, ResearchJob
+from .tasks import run_research_job, run_research_job_sync
 
 
 @require_GET
@@ -24,9 +21,64 @@ def health(_request: HttpRequest) -> JsonResponse:
     return JsonResponse({"status": "ok"})
 
 
+@require_GET
+def auth_me(request: HttpRequest) -> JsonResponse:
+    if not request.user.is_authenticated:
+        return JsonResponse({"authenticated": False})
+    return JsonResponse(
+        {
+            "authenticated": True,
+            "user": {
+                "id": request.user.id,
+                "username": request.user.username,
+            },
+        }
+    )
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def auth_register(request: HttpRequest) -> JsonResponse:
+    payload = _json_body(request)
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    if len(username) < 3 or len(password) < 6:
+        return JsonResponse({"detail": "Username must be 3+ chars and password 6+ chars."}, status=400)
+    if User.objects.filter(username=username).exists():
+        return JsonResponse({"detail": "Username already exists."}, status=400)
+
+    user = User.objects.create_user(username=username, password=password)
+    login(request, user)
+    return JsonResponse({"authenticated": True, "user": {"id": user.id, "username": user.username}}, status=201)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def auth_login(request: HttpRequest) -> JsonResponse:
+    payload = _json_body(request)
+    username = (payload.get("username") or "").strip()
+    password = payload.get("password") or ""
+    user = authenticate(request, username=username, password=password)
+    if user is None:
+        return JsonResponse({"detail": "Invalid credentials."}, status=401)
+    login(request, user)
+    return JsonResponse({"authenticated": True, "user": {"id": user.id, "username": user.username}})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def auth_logout(request: HttpRequest) -> JsonResponse:
+    logout(request)
+    return JsonResponse({"authenticated": False})
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST"])
 def sessions_view(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
     if request.method == "GET":
         sessions = [
             {
@@ -37,8 +89,9 @@ def sessions_view(request: HttpRequest) -> JsonResponse:
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "message_count": session.messages.count(),
+                "reports_count": session.reports.count(),
             }
-            for session in ConversationSession.objects.all()[:50]
+            for session in ConversationSession.objects.filter(owner=user)[:50]
         ]
         return JsonResponse({"sessions": sessions})
 
@@ -46,15 +99,19 @@ def sessions_view(request: HttpRequest) -> JsonResponse:
     title = (payload.get("title") or "New research session").strip()
     mode = payload.get("mode") or "multi"
     dry_run = bool(payload.get("dry_run", False))
-    session = ConversationSession.objects.create(title=title, mode=mode, dry_run=dry_run)
+    session = ConversationSession.objects.create(owner=user, title=title, mode=mode, dry_run=dry_run)
     return JsonResponse(_serialize_session(session), status=201)
 
 
 @csrf_exempt
 @require_http_methods(["GET", "PATCH", "DELETE"])
 def session_detail(request: HttpRequest, session_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
     try:
-        session = _get_session(session_id)
+        session = _get_session(user, session_id)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
 
@@ -75,9 +132,12 @@ def session_detail(request: HttpRequest, session_id: UUID) -> JsonResponse:
 
 
 @require_GET
-def session_messages(_request: HttpRequest, session_id: UUID) -> JsonResponse:
+def session_messages(request: HttpRequest, session_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
     try:
-        session = _get_session(session_id)
+        session = _get_session(user, session_id)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
     messages = [_serialize_message(message) for message in session.messages.all()]
@@ -85,9 +145,12 @@ def session_messages(_request: HttpRequest, session_id: UUID) -> JsonResponse:
 
 
 @require_GET
-def session_reports(_request: HttpRequest, session_id: UUID) -> JsonResponse:
+def session_reports(request: HttpRequest, session_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
     try:
-        session = _get_session(session_id)
+        session = _get_session(user, session_id)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
     reports = [
@@ -108,6 +171,10 @@ def session_reports(_request: HttpRequest, session_id: UUID) -> JsonResponse:
 @csrf_exempt
 @require_http_methods(["POST"])
 def chat_start(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
     payload = _json_body(request)
     query = (payload.get("query") or "").strip()
     if len(query) < 3:
@@ -118,9 +185,10 @@ def chat_start(request: HttpRequest) -> JsonResponse:
     session_id = payload.get("session_id")
 
     try:
-        session = _resolve_session(session_id=session_id, query=query, mode=mode, dry_run=dry_run)
+        session = _resolve_session(user=user, session_id=session_id, query=query, mode=mode, dry_run=dry_run)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
+
     with transaction.atomic():
         user_message = ConversationMessage.objects.create(
             session=session,
@@ -135,17 +203,19 @@ def chat_start(request: HttpRequest) -> JsonResponse:
             dry_run=dry_run,
             state="queued",
         )
-        JobProgressEvent.objects.create(job=job, sequence=1, message="Queued research job.")
 
-    thread = Thread(target=_run_job, args=(job.id,), daemon=True)
-    thread.start()
+    _dispatch_research_job(str(job.id))
     return JsonResponse({"job_id": str(job.id), "session_id": str(session.id)}, status=202)
 
 
 @require_GET
-def chat_status(_request: HttpRequest, job_id: UUID) -> JsonResponse:
+def chat_status(request: HttpRequest, job_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
     try:
-        job = ResearchJob.objects.select_related("assistant_message", "session").get(id=job_id)
+        job = ResearchJob.objects.select_related("assistant_message", "session").get(id=job_id, session__owner=user)
     except ResearchJob.DoesNotExist:
         return JsonResponse({"detail": "Job not found."}, status=404)
 
@@ -160,81 +230,26 @@ def chat_status(_request: HttpRequest, job_id: UUID) -> JsonResponse:
     return JsonResponse(payload)
 
 
-def _run_job(job_id: UUID) -> None:
-    job = ResearchJob.objects.select_related("session").get(id=job_id)
-
-    def emit(message: str) -> None:
-        _append_progress(job_id, message)
-
-    ResearchJob.objects.filter(id=job_id).update(state="running", updated_at=timezone.now())
-
-    try:
-        settings = load_settings(require_api_keys=not job.dry_run)
-        agent = ResearchAgent(settings)
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path("reports/api") / run_id
-        result = agent.run(
-            query=job.query,
-            output_dir=output_dir,
-            mode=job.mode,
-            dry_run=job.dry_run,
-            progress_callback=emit,
-        )
-        answer = _build_brief(result.markdown)
-        report = build_presentable_report(result.markdown, result.sources, result.summaries)
-        assistant_message = ConversationMessage.objects.create(
-            session_id=job.session_id,
-            role="assistant",
-            content=answer,
-            report_markdown=result.markdown,
-            report_payload=report,
-            sources_count=len(result.sources),
-        )
-        SavedReport.objects.create(
-            session_id=job.session_id,
-            assistant_message=assistant_message,
-            headline=report.get("headline", "Research report"),
-            confidence_score=report.get("confidence", {}).get("score", 0.0),
-            citations_count=report.get("stats", {}).get("citations_count", 0),
-            sources_count=report.get("stats", {}).get("sources_count", 0),
-            output_dir=str(output_dir),
-        )
-        ResearchJob.objects.filter(id=job_id).update(
-            state="completed",
-            assistant_message=assistant_message,
-            output_dir=str(output_dir),
-            completed_at=timezone.now(),
-            updated_at=timezone.now(),
-        )
-    except Exception as exc:
-        ResearchJob.objects.filter(id=job_id).update(
-            state="failed",
-            error=f"Run failed: {exc}",
-            updated_at=timezone.now(),
-        )
+def _require_user(request: HttpRequest) -> User | JsonResponse:
+    if not request.user.is_authenticated:
+        return JsonResponse({"detail": "Authentication required."}, status=401)
+    return request.user
 
 
-def _append_progress(job_id: UUID, message: str) -> None:
-    last_event = JobProgressEvent.objects.filter(job_id=job_id).order_by("-sequence").first()
-    if last_event and last_event.message == message:
-        return
-    next_sequence = 1 if last_event is None else last_event.sequence + 1
-    JobProgressEvent.objects.create(job_id=job_id, sequence=next_sequence, message=message)
-
-
-def _resolve_session(session_id: str | None, query: str, mode: str, dry_run: bool) -> ConversationSession:
+def _resolve_session(user: User, session_id: str | None, query: str, mode: str, dry_run: bool) -> ConversationSession:
     if session_id:
-        return _get_session(UUID(session_id))
+        return _get_session(user, UUID(session_id))
     return ConversationSession.objects.create(
+        owner=user,
         title=_title_from_query(query),
         mode=mode,
         dry_run=dry_run,
     )
 
 
-def _get_session(session_id: UUID) -> ConversationSession:
+def _get_session(user: User, session_id: UUID) -> ConversationSession:
     try:
-        return ConversationSession.objects.get(id=session_id)
+        return ConversationSession.objects.get(id=session_id, owner=user)
     except ConversationSession.DoesNotExist as exc:
         raise ValueError("Session not found.") from exc
 
@@ -271,16 +286,18 @@ def _json_body(request: HttpRequest) -> dict:
     return json.loads(request.body.decode("utf-8"))
 
 
-def _build_brief(report_markdown: str) -> str:
-    lines = [line.strip() for line in report_markdown.splitlines() if line.strip()]
-    if not lines:
-        return "No report content produced."
-    for i, line in enumerate(lines):
-        if "Executive Summary" in line and i + 1 < len(lines):
-            return lines[i + 1]
-    return lines[0]
-
-
 def _title_from_query(query: str) -> str:
     title = query.strip()
     return title[:80] + ("..." if len(title) > 80 else "")
+
+
+def _dispatch_research_job(job_id: str) -> None:
+    if settings.RESEARCH_USE_CELERY:
+        try:
+            run_research_job.delay(job_id)
+            return
+        except Exception:
+            pass
+
+    thread = Thread(target=run_research_job_sync, args=(job_id,), daemon=True)
+    thread.start()

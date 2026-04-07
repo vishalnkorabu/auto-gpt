@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import uuid
 
+from django.contrib.auth.models import User
 from django.db import models
 
 
 class ConversationSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="research_sessions")
     title = models.CharField(max_length=255)
     mode = models.CharField(max_length=16, default="multi")
     dry_run = models.BooleanField(default=False)

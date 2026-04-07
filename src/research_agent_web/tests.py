@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.contrib.auth.models import User
 from django.test import Client, TestCase
 
 from research_agent.models import SourceDocument, SourceSummary
@@ -11,6 +12,8 @@ from .models import ConversationSession
 class SessionApiTests(TestCase):
     def setUp(self) -> None:
         self.client = Client()
+        self.user = User.objects.create_user(username="tester", password="secret123")
+        self.client.login(username="tester", password="secret123")
 
     def test_create_rename_and_delete_session(self) -> None:
         create_response = self.client.post(
@@ -32,6 +35,11 @@ class SessionApiTests(TestCase):
         delete_response = self.client.delete(f"/api/sessions/{session_id}")
         self.assertEqual(delete_response.status_code, 200)
         self.assertFalse(ConversationSession.objects.filter(id=session_id).exists())
+
+    def test_sessions_require_authentication(self) -> None:
+        anon = Client()
+        response = anon.get("/api/sessions")
+        self.assertEqual(response.status_code, 401)
 
 
 class PresentationTests(TestCase):

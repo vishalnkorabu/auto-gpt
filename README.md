@@ -18,7 +18,7 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 
 - Python
 - Groq API (OpenAI-compatible)
-- Django backend + SQLite + React (Vite) frontend
+- Django backend + Celery/Redis + SQLite + React (Vite) frontend
 - LangChain + LangGraph + FAISS
 - Web search via Tavily or SerpAPI
 - Research paper search via Semantic Scholar
@@ -99,6 +99,30 @@ python manage.py migrate
 python manage.py runserver 8000
 ```
 
+Start worker:
+
+```bash
+celery -A research_agent_django worker -l info -P solo
+```
+
+Redis is required for the worker queue. Default broker:
+
+```bash
+redis://127.0.0.1:6379/0
+```
+
+You can override this in `.env` with:
+
+```bash
+CELERY_BROKER_URL=redis://127.0.0.1:6379/0
+CELERY_RESULT_BACKEND=redis://127.0.0.1:6379/0
+RESEARCH_USE_CELERY=1
+```
+
+Local dev fallback:
+- If `RESEARCH_USE_CELERY` is unset or `0`, jobs run in a local background thread.
+- If `RESEARCH_USE_CELERY=1` but Redis/Celery publish fails, the app falls back to local execution automatically.
+
 Start frontend (new terminal):
 
 ```bash
@@ -114,7 +138,7 @@ Open `http://localhost:5173` and send queries in the chat UI.
 The app now uses a local SQLite database (`db.sqlite3`) through Django ORM.
 
 Tables implemented:
-- `ConversationSession`: one saved chat thread, with title/mode/dry-run metadata
+- `ConversationSession`: one saved chat thread, owned by a Django user
 - `ConversationMessage`: every user/assistant message, including stored report payloads
 - `ResearchJob`: one generation run tied to a session and its initiating user message
 - `JobProgressEvent`: ordered progress messages used by the live generating UI
@@ -122,6 +146,7 @@ Tables implemented:
 
 This schema gives you:
 - persistent chat history across app restarts
+- per-user session isolation
 - resumable session list in the UI
 - traceable job progress for the loading state
 - stored assistant outputs and source payloads for later review
@@ -145,4 +170,6 @@ The output directory will include:
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - Basic session/report/API tests are available via `python manage.py test`
+- Jobs are now intended to run via Celery/Redis instead of in-process threads
+- For local development, the app can still run without Redis by using the built-in fallback path
 - You can still swap providers and extend orchestration behavior in `agent.py` and `multi_agent.py`.

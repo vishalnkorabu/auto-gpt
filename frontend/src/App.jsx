@@ -13,46 +13,92 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingTitle, setEditingTitle] = useState("");
+  const [authMode, setAuthMode] = useState("login");
+  const [credentials, setCredentials] = useState({ username: "", password: "" });
+  const [user, setUser] = useState(null);
+  const [authError, setAuthError] = useState("");
   const pollRef = useRef(null);
 
   useEffect(() => {
-    void loadSessions();
-    const stored = window.localStorage.getItem(SESSION_KEY);
-    if (stored) {
-      void loadSessionMessages(stored);
-    }
+    void bootstrap();
     return () => window.clearInterval(pollRef.current);
   }, []);
 
-  async function loadSessions() {
-    const res = await fetch("/api/sessions");
-    const data = await res.json();
-    if (res.ok) {
-      setSessions(data.sessions || []);
+  async function bootstrap() {
+    const me = await apiFetch("/api/auth/me");
+    if (me.authenticated) {
+      setUser(me.user);
+      await loadSessions();
+      const stored = window.localStorage.getItem(SESSION_KEY);
+      if (stored) {
+        await loadSessionMessages(stored);
+      }
     }
   }
 
+  async function apiFetch(url, options = {}) {
+    const response = await fetch(url, {
+      credentials: "include",
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(data.detail || "Request failed");
+    }
+    return data;
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    setAuthError("");
+    try {
+      const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+      const data = await apiFetch(path, {
+        method: "POST",
+        body: JSON.stringify(credentials),
+      });
+      setUser(data.user);
+      setCredentials({ username: "", password: "" });
+      await loadSessions();
+    } catch (err) {
+      setAuthError(err.message);
+    }
+  }
+
+  async function logoutUser() {
+    await apiFetch("/api/auth/logout", { method: "POST", body: "{}" });
+    setUser(null);
+    setSessions([]);
+    setMessages([]);
+    setCurrentSessionId(null);
+    window.localStorage.removeItem(SESSION_KEY);
+  }
+
+  async function loadSessions() {
+    const data = await apiFetch("/api/sessions");
+    setSessions(data.sessions || []);
+  }
+
   async function loadSessionMessages(sessionId) {
-    const res = await fetch(`/api/sessions/${sessionId}/messages`);
-    const data = await res.json();
-    if (!res.ok) {
+    try {
+      const data = await apiFetch(`/api/sessions/${sessionId}/messages`);
+      setCurrentSessionId(sessionId);
+      setMode(data.session.mode);
+      setDryRun(data.session.dry_run);
+      setMessages(
+        (data.messages || []).map((message) =>
+          message.role === "assistant"
+            ? { id: message.id, role: "assistant", payload: message, text: message.text }
+            : { id: message.id, role: "user", text: message.text }
+        )
+      );
+      window.localStorage.setItem(SESSION_KEY, sessionId);
+    } catch (_err) {
       window.localStorage.removeItem(SESSION_KEY);
       setCurrentSessionId(null);
       setMessages([]);
-      return;
     }
-
-    setCurrentSessionId(sessionId);
-    setMode(data.session.mode);
-    setDryRun(data.session.dry_run);
-    setMessages(
-      (data.messages || []).map((message) =>
-        message.role === "assistant"
-          ? { id: message.id, role: "assistant", payload: message, text: message.text }
-          : { id: message.id, role: "user", text: message.text }
-      )
-    );
-    window.localStorage.setItem(SESSION_KEY, sessionId);
   }
 
   async function startNewSession() {
@@ -65,21 +111,17 @@ export default function App() {
   async function renameSession(sessionId) {
     const title = editingTitle.trim();
     if (!title) return;
-    const res = await fetch(`/api/sessions/${sessionId}`, {
+    await apiFetch(`/api/sessions/${sessionId}`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title }),
     });
-    if (res.ok) {
-      setEditingSessionId(null);
-      setEditingTitle("");
-      await loadSessions();
-    }
+    setEditingSessionId(null);
+    setEditingTitle("");
+    await loadSessions();
   }
 
   async function deleteSession(sessionId) {
-    const res = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
-    if (!res.ok) return;
+    await apiFetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
     if (sessionId === currentSessionId) {
       await startNewSession();
     } else {
@@ -97,9 +139,8 @@ export default function App() {
     setLoading(true);
 
     try {
-      const startRes = await fetch("/api/chat/start", {
+      const startData = await apiFetch("/api/chat/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: trimmed,
           mode,
@@ -107,10 +148,6 @@ export default function App() {
           session_id: currentSessionId,
         }),
       });
-      const startData = await startRes.json();
-      if (!startRes.ok) {
-        throw new Error(startData.detail || "Unable to start research job");
-      }
 
       setCurrentSessionId(startData.session_id);
       window.localStorage.setItem(SESSION_KEY, startData.session_id);
@@ -123,7 +160,7 @@ export default function App() {
       ]);
 
       pollRef.current = window.setInterval(() => {
-        pollJob(startData.job_id, loadingId);
+        void pollJob(startData.job_id, loadingId);
       }, 1200);
       await pollJob(startData.job_id, loadingId, true);
     } catch (err) {
@@ -134,11 +171,7 @@ export default function App() {
 
   async function pollJob(jobId, loadingId, immediate = false) {
     try {
-      const res = await fetch(`/api/chat/status/${jobId}`);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || "Unable to fetch job status");
-      }
+      const data = await apiFetch(`/api/chat/status/${jobId}`);
 
       setMessages((prev) =>
         prev.map((msg) =>
@@ -182,17 +215,54 @@ export default function App() {
     }
   }
 
+  if (!user) {
+    return (
+      <div className="auth-shell">
+        <form className="auth-card" onSubmit={submitAuth}>
+          <h1>AI Research Agent</h1>
+          <p className="topline">Sign in to keep your research sessions isolated and persistent.</p>
+          <div className="auth-tabs">
+            <button type="button" className={authMode === "login" ? "tab active" : "tab"} onClick={() => setAuthMode("login")}>
+              Login
+            </button>
+            <button type="button" className={authMode === "register" ? "tab active" : "tab"} onClick={() => setAuthMode("register")}>
+              Register
+            </button>
+          </div>
+          <input
+            value={credentials.username}
+            onChange={(e) => setCredentials((prev) => ({ ...prev, username: e.target.value }))}
+            placeholder="Username"
+          />
+          <input
+            type="password"
+            value={credentials.password}
+            onChange={(e) => setCredentials((prev) => ({ ...prev, password: e.target.value }))}
+            placeholder="Password"
+          />
+          {authError ? <div className="auth-error">{authError}</div> : null}
+          <button type="submit">{authMode === "login" ? "Login" : "Create account"}</button>
+        </form>
+      </div>
+    );
+  }
+
   return (
     <div className="app app-layout">
       <aside className="sidebar">
         <div className="sidebar-header">
           <div>
             <h2>History</h2>
-            <p>Local conversation sessions saved in SQLite.</p>
+            <p>{user.username}'s local research sessions.</p>
           </div>
-          <button className="secondary-button" type="button" onClick={startNewSession}>
-            New chat
-          </button>
+          <div className="sidebar-actions">
+            <button className="secondary-button" type="button" onClick={startNewSession}>
+              New chat
+            </button>
+            <button className="secondary-button" type="button" onClick={logoutUser}>
+              Logout
+            </button>
+          </div>
         </div>
         <div className="session-list">
           {sessions.map((session) => (
@@ -216,7 +286,7 @@ export default function App() {
                   <div className="session-title">{session.title}</div>
                 )}
                 <div className="session-meta">
-                  {new Date(session.updated_at).toLocaleString()} · {session.reports_count ?? 0} reports
+                  {new Date(session.updated_at).toLocaleString()} - {session.reports_count ?? 0} reports
                 </div>
               </button>
               <div className="session-actions">
@@ -249,7 +319,7 @@ export default function App() {
         <header className="topbar">
           <div>
             <h1>AI Research Agent</h1>
-            <p className="topline">Django-backed research chat with persistent local session history.</p>
+            <p className="topline">Django + Celery + Redis research chat with user-isolated session history.</p>
           </div>
           <div className="controls">
             <label>
