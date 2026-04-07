@@ -72,6 +72,25 @@ class ResearchJob(models.Model):
         ordering = ["-created_at"]
 
 
+class SavedReport(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    session = models.ForeignKey(ConversationSession, on_delete=models.CASCADE, related_name="reports")
+    assistant_message = models.OneToOneField(
+        ConversationMessage,
+        on_delete=models.CASCADE,
+        related_name="saved_report",
+    )
+    headline = models.CharField(max_length=255)
+    confidence_score = models.FloatField(default=0.0)
+    citations_count = models.PositiveIntegerField(default=0)
+    sources_count = models.PositiveIntegerField(default=0)
+    output_dir = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
 class JobProgressEvent(models.Model):
     id = models.BigAutoField(primary_key=True)
     job = models.ForeignKey(ResearchJob, on_delete=models.CASCADE, related_name="progress_events")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.contrib import admin
 
-from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob
+from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob, SavedReport
 
 
 @admin.register(ConversationSession)
@@ -29,3 +29,9 @@ class ResearchJobAdmin(admin.ModelAdmin):
 class JobProgressEventAdmin(admin.ModelAdmin):
     list_display = ("job", "sequence", "message", "created_at")
     search_fields = ("message",)
+
+
+@admin.register(SavedReport)
+class SavedReportAdmin(admin.ModelAdmin):
+    list_display = ("headline", "session", "confidence_score", "sources_count", "created_at")
+    search_fields = ("headline",)

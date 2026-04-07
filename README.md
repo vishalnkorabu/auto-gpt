@@ -12,6 +12,7 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 - Generates a structured report with citations
 - Builds a FAISS index for source retrieval
 - Provides a React chat UI for real-time query interaction
+- Persists conversation history and reports in a local SQLite database
 
 ## Tech Stack
 
@@ -44,8 +45,10 @@ src/research_agent_web/
   models.py            # SQLite-backed session/job/message tables
   views.py             # Django JSON API for sessions, jobs, history
   urls.py              # API routes
+  tests.py             # Django tests for API and presentation basics
 
 manage.py              # Django entrypoint
+ROADMAP.md             # Phase-by-phase upgrade plan
 
 frontend/
   src/App.jsx          # React chat interface
@@ -115,12 +118,14 @@ Tables implemented:
 - `ConversationMessage`: every user/assistant message, including stored report payloads
 - `ResearchJob`: one generation run tied to a session and its initiating user message
 - `JobProgressEvent`: ordered progress messages used by the live generating UI
+- `SavedReport`: persisted report records with confidence and source counts
 
 This schema gives you:
 - persistent chat history across app restarts
 - resumable session list in the UI
 - traceable job progress for the loading state
 - stored assistant outputs and source payloads for later review
+- saved report metadata that can later power exports and analytics
 
 The output directory will include:
 - `report.md`
@@ -139,4 +144,5 @@ The output directory will include:
 - Set `MAX_PAPER_RESULTS=0` to disable Semantic Scholar paper search when rate-limited.
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
+- Basic session/report/API tests are available via `python manage.py test`
 - You can still swap providers and extend orchestration behavior in `agent.py` and `multi_agent.py`.

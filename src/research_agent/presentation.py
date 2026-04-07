@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from .models import SourceDocument, SourceSummary
+from .quality import score_report_confidence, score_source_credibility
 
 
 SECTION_HEADING_RE = re.compile(r"^(?:##\s+|\*\*)(.+?)(?:\*\*)?$", re.MULTILINE)
@@ -39,6 +40,10 @@ def build_presentable_report(
             "citations_count": len(CITATION_RE.findall(report_markdown)),
             "sections_count": len(cleaned_sections),
         },
+        "confidence": {
+            "score": score_report_confidence(sources, len(CITATION_RE.findall(report_markdown))),
+            "label": _confidence_label(score_report_confidence(sources, len(CITATION_RE.findall(report_markdown)))),
+        },
     }
 
 
@@ -55,6 +60,7 @@ def _build_source_items(
             "title": source.title,
             "url": source.url,
             "source_type": source.source_type,
+            "credibility_score": score_source_credibility(source),
             "snippet": source.snippet,
             "summary": summary.summary if summary else "",
             "key_points": summary.key_points if summary else [],
@@ -133,3 +139,11 @@ def _build_response_text(sections: list[dict], report_markdown: str) -> str:
 
     fallback = _strip_citations(_strip_references(_remove_title(report_markdown)))
     return fallback.strip()
+
+
+def _confidence_label(score: float) -> str:
+    if score >= 0.8:
+        return "High"
+    if score >= 0.6:
+        return "Medium"
+    return "Low"

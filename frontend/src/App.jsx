@@ -11,6 +11,8 @@ export default function App() {
   const [dryRun, setDryRun] = useState(false);
   const [drawerReport, setDrawerReport] = useState(null);
   const [currentSessionId, setCurrentSessionId] = useState(null);
+  const [editingSessionId, setEditingSessionId] = useState(null);
+  const [editingTitle, setEditingTitle] = useState("");
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -58,6 +60,31 @@ export default function App() {
     setMessages([]);
     window.localStorage.removeItem(SESSION_KEY);
     await loadSessions();
+  }
+
+  async function renameSession(sessionId) {
+    const title = editingTitle.trim();
+    if (!title) return;
+    const res = await fetch(`/api/sessions/${sessionId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    });
+    if (res.ok) {
+      setEditingSessionId(null);
+      setEditingTitle("");
+      await loadSessions();
+    }
+  }
+
+  async function deleteSession(sessionId) {
+    const res = await fetch(`/api/sessions/${sessionId}`, { method: "DELETE" });
+    if (!res.ok) return;
+    if (sessionId === currentSessionId) {
+      await startNewSession();
+    } else {
+      await loadSessions();
+    }
   }
 
   async function sendQuery(event) {
@@ -169,15 +196,51 @@ export default function App() {
         </div>
         <div className="session-list">
           {sessions.map((session) => (
-            <button
+            <div
               key={session.id}
-              type="button"
               className={`session-card ${session.id === currentSessionId ? "active" : ""}`}
-              onClick={() => loadSessionMessages(session.id)}
             >
-              <div className="session-title">{session.title}</div>
-              <div className="session-meta">{new Date(session.updated_at).toLocaleString()}</div>
-            </button>
+              <button
+                type="button"
+                className="session-main"
+                onClick={() => loadSessionMessages(session.id)}
+              >
+                {editingSessionId === session.id ? (
+                  <input
+                    className="session-edit"
+                    value={editingTitle}
+                    onChange={(e) => setEditingTitle(e.target.value)}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <div className="session-title">{session.title}</div>
+                )}
+                <div className="session-meta">
+                  {new Date(session.updated_at).toLocaleString()} · {session.reports_count ?? 0} reports
+                </div>
+              </button>
+              <div className="session-actions">
+                {editingSessionId === session.id ? (
+                  <button type="button" className="mini-button" onClick={() => renameSession(session.id)}>
+                    Save
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="mini-button"
+                    onClick={() => {
+                      setEditingSessionId(session.id);
+                      setEditingTitle(session.title);
+                    }}
+                  >
+                    Rename
+                  </button>
+                )}
+                <button type="button" className="mini-button danger" onClick={() => deleteSession(session.id)}>
+                  Delete
+                </button>
+              </div>
+            </div>
           ))}
         </div>
       </aside>
@@ -309,6 +372,7 @@ function SourcesDrawer({ report, onClose }) {
               <a href={source.url} target="_blank" rel="noreferrer">
                 {source.url}
               </a>
+              <div className="source-meta">Credibility {Math.round((source.credibility_score || 0) * 100)}%</div>
               <p>{source.summary || source.snippet}</p>
               {!!source.key_points?.length && (
                 <div className="source-points">

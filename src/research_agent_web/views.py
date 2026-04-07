@@ -16,7 +16,7 @@ from research_agent.agent import ResearchAgent
 from research_agent.config import load_settings
 from research_agent.presentation import build_presentable_report
 
-from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob
+from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob, SavedReport
 
 
 @require_GET
@@ -50,12 +50,27 @@ def sessions_view(request: HttpRequest) -> JsonResponse:
     return JsonResponse(_serialize_session(session), status=201)
 
 
-@require_GET
-def session_detail(_request: HttpRequest, session_id: UUID) -> JsonResponse:
+@csrf_exempt
+@require_http_methods(["GET", "PATCH", "DELETE"])
+def session_detail(request: HttpRequest, session_id: UUID) -> JsonResponse:
     try:
         session = _get_session(session_id)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
+
+    if request.method == "PATCH":
+        payload = _json_body(request)
+        title = (payload.get("title") or "").strip()
+        if not title:
+            return JsonResponse({"detail": "Title is required."}, status=400)
+        session.title = title[:255]
+        session.save(update_fields=["title", "updated_at"])
+        return JsonResponse(_serialize_session(session))
+
+    if request.method == "DELETE":
+        session.delete()
+        return JsonResponse({"deleted": True})
+
     return JsonResponse(_serialize_session(session))
 
 
@@ -67,6 +82,27 @@ def session_messages(_request: HttpRequest, session_id: UUID) -> JsonResponse:
         return JsonResponse({"detail": str(exc)}, status=404)
     messages = [_serialize_message(message) for message in session.messages.all()]
     return JsonResponse({"session": _serialize_session(session), "messages": messages})
+
+
+@require_GET
+def session_reports(_request: HttpRequest, session_id: UUID) -> JsonResponse:
+    try:
+        session = _get_session(session_id)
+    except ValueError as exc:
+        return JsonResponse({"detail": str(exc)}, status=404)
+    reports = [
+        {
+            "id": report.id,
+            "headline": report.headline,
+            "confidence_score": report.confidence_score,
+            "citations_count": report.citations_count,
+            "sources_count": report.sources_count,
+            "output_dir": report.output_dir,
+            "created_at": report.created_at.isoformat(),
+        }
+        for report in session.reports.all()
+    ]
+    return JsonResponse({"session": _serialize_session(session), "reports": reports})
 
 
 @csrf_exempt
@@ -154,6 +190,15 @@ def _run_job(job_id: UUID) -> None:
             report_payload=report,
             sources_count=len(result.sources),
         )
+        SavedReport.objects.create(
+            session_id=job.session_id,
+            assistant_message=assistant_message,
+            headline=report.get("headline", "Research report"),
+            confidence_score=report.get("confidence", {}).get("score", 0.0),
+            citations_count=report.get("stats", {}).get("citations_count", 0),
+            sources_count=report.get("stats", {}).get("sources_count", 0),
+            output_dir=str(output_dir),
+        )
         ResearchJob.objects.filter(id=job_id).update(
             state="completed",
             assistant_message=assistant_message,
@@ -202,6 +247,7 @@ def _serialize_session(session: ConversationSession) -> dict:
         "dry_run": session.dry_run,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
+        "reports_count": session.reports.count(),
     }
 
 
