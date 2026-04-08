@@ -479,6 +479,10 @@ select {
   gap: 10px;
 }
 
+.progress-feed.compact {
+  gap: 8px;
+}
+
 .progress-item {
   display: flex;
   gap: 10px;
@@ -648,6 +652,10 @@ select {
   border-radius: 14px;
   padding: 12px;
   background: rgba(255, 255, 255, 0.6);
+}
+
+.document-card:has(input:disabled) {
+  opacity: 0.78;
 }
 
 .document-card input {

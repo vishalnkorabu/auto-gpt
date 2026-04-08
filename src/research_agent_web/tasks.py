@@ -19,12 +19,26 @@ from research_agent.agent import ResearchAgent
 from research_agent.config import load_settings
 from research_agent.presentation import build_presentable_report
 
-from .models import ConversationMessage, JobProgressEvent, ResearchJob, SavedReport
+from .document_service import process_document, answer_document_question
+from .models import (
+    ConversationMessage,
+    DocumentTask,
+    DocumentTaskProgressEvent,
+    JobProgressEvent,
+    ResearchJob,
+    SavedReport,
+    UserDocument,
+)
 
 
 @shared_task(bind=True)
 def run_research_job(self, job_id: str) -> None:
     run_research_job_sync(job_id)
+
+
+@shared_task(bind=True)
+def run_document_task(self, task_id: str) -> None:
+    run_document_task_sync(task_id)
 
 
 def run_research_job_sync(job_id: str) -> None:
@@ -83,12 +97,78 @@ def run_research_job_sync(job_id: str) -> None:
         raise
 
 
+def run_document_task_sync(task_id: str) -> None:
+    parsed_task_id = UUID(task_id)
+    task = DocumentTask.objects.select_related("document", "session").get(id=parsed_task_id)
+
+    def emit(message: str) -> None:
+        _append_document_progress(parsed_task_id, message)
+
+    DocumentTask.objects.filter(id=parsed_task_id).update(state="running", updated_at=timezone.now(), error="", result=None)
+
+    try:
+        if task.task_type == "ingest":
+            if task.document_id is None:
+                raise ValueError("Document ingest task is missing a document.")
+            emit("Reading uploaded file.")
+            result = process_document(task.document)
+            emit("Chunking complete.")
+            DocumentTask.objects.filter(id=parsed_task_id).update(
+                state="completed",
+                result=result,
+                completed_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+            return
+
+        if task.task_type == "query":
+            emit("Selecting relevant document chunks.")
+            document_ids = task.payload.get("document_ids") or []
+            queryset = UserDocument.objects.prefetch_related("chunks").filter(owner_id=task.owner_id, status="processed")
+            if task.session_id:
+                queryset = queryset.filter(session_id=task.session_id)
+            if document_ids:
+                queryset = queryset.filter(id__in=document_ids)
+            documents = list(queryset[:12])
+            if not documents:
+                raise ValueError("No processed documents matched this query.")
+            emit("Generating grounded document answer.")
+            result = answer_document_question(task.payload.get("question", ""), documents)
+            emit("Document answer ready.")
+            DocumentTask.objects.filter(id=parsed_task_id).update(
+                state="completed",
+                result=result,
+                completed_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
+            return
+
+        raise ValueError(f"Unsupported document task type: {task.task_type}")
+    except Exception as exc:
+        if task.document_id and task.task_type == "ingest":
+            UserDocument.objects.filter(id=task.document_id).update(status="failed", updated_at=timezone.now())
+        DocumentTask.objects.filter(id=parsed_task_id).update(
+            state="failed",
+            error=f"Run failed: {exc}",
+            updated_at=timezone.now(),
+        )
+        raise
+
+
 def _append_progress(job_id: UUID, message: str) -> None:
     last_event = JobProgressEvent.objects.filter(job_id=job_id).order_by("-sequence").first()
     if last_event and last_event.message == message:
         return
     next_sequence = 1 if last_event is None else last_event.sequence + 1
     JobProgressEvent.objects.create(job_id=job_id, sequence=next_sequence, message=message)
+
+
+def _append_document_progress(task_id: UUID, message: str) -> None:
+    last_event = DocumentTaskProgressEvent.objects.filter(task_id=task_id).order_by("-sequence").first()
+    if last_event and last_event.message == message:
+        return
+    next_sequence = 1 if last_event is None else last_event.sequence + 1
+    DocumentTaskProgressEvent.objects.create(task_id=task_id, sequence=next_sequence, message=message)
 
 
 def _build_brief(report_markdown: str) -> str:

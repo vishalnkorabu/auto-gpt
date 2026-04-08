@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import os
 import re
+import uuid
 from collections import Counter
 from pathlib import Path
-
-from django.core.files.uploadedfile import UploadedFile
 
 from research_agent.config import load_settings
 from research_agent.llm import LLMClient
@@ -13,61 +13,72 @@ from .models import DocumentChunk, UserDocument
 
 try:
     from docx import Document as DocxDocument
-except ModuleNotFoundError:  # pragma: no cover - dependency is optional until installed.
+except ModuleNotFoundError:  # pragma: no cover
     DocxDocument = None
 
 try:
     from pypdf import PdfReader
-except ModuleNotFoundError:  # pragma: no cover - dependency is optional until installed.
+except ModuleNotFoundError:  # pragma: no cover
     PdfReader = None
 
 
 WORD_RE = re.compile(r"[a-zA-Z0-9]{3,}")
+UPLOAD_ROOT = Path("data/uploads")
 
 
-def ingest_uploaded_document(upload: UploadedFile, owner_id: int, session_id: str | None = None) -> UserDocument:
-    file_type, text = extract_text_from_upload(upload)
+def persist_upload(upload, owner_id: int) -> tuple[str, str]:
+    suffix = Path(upload.name).suffix.lower()
+    safe_suffix = suffix if suffix else ".bin"
+    directory = UPLOAD_ROOT / str(owner_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid.uuid4().hex}{safe_suffix}"
+    destination = directory / filename
+    with destination.open("wb") as handle:
+        for chunk in upload.chunks():
+            handle.write(chunk)
+    return str(destination), suffix.lstrip(".") or "bin"
+
+
+def process_document(document: UserDocument) -> dict:
+    file_type, text = extract_text_from_path(document.storage_path, document.name)
     if len(text.strip()) < 20:
         raise ValueError("The uploaded file does not contain enough readable text to query.")
 
-    document = UserDocument.objects.create(
-        owner_id=owner_id,
-        session_id=session_id,
-        name=upload.name[:255],
-        file_type=file_type,
-        content=text,
-        status="processed",
-    )
-
     chunks = chunk_text(text)
+    DocumentChunk.objects.filter(document=document).delete()
     DocumentChunk.objects.bulk_create(
         [
             DocumentChunk(document=document, chunk_index=index, content=chunk)
             for index, chunk in enumerate(chunks, start=1)
         ]
     )
-    return document
+    document.file_type = file_type
+    document.content = text
+    document.status = "processed"
+    document.save(update_fields=["file_type", "content", "status", "updated_at"])
+    return {"document_id": str(document.id), "chunk_count": len(chunks), "name": document.name}
 
 
-def extract_text_from_upload(upload: UploadedFile) -> tuple[str, str]:
-    suffix = Path(upload.name).suffix.lower()
-    raw = upload.read()
-    upload.seek(0)
+def extract_text_from_path(storage_path: str, original_name: str) -> tuple[str, str]:
+    path = Path(storage_path)
+    suffix = path.suffix.lower() or Path(original_name).suffix.lower()
+    if not path.exists():
+        raise ValueError("The uploaded file could not be found on disk.")
 
     if suffix in {".txt", ".md", ".csv", ".json"}:
-        return suffix.lstrip("."), raw.decode("utf-8", errors="ignore").strip()
+        return suffix.lstrip("."), path.read_text(encoding="utf-8", errors="ignore").strip()
 
     if suffix == ".pdf":
         if PdfReader is None:
             raise ValueError("PDF support is not installed. Add `pypdf` and try again.")
-        reader = PdfReader(upload)
+        reader = PdfReader(str(path))
         text = "\n".join((page.extract_text() or "").strip() for page in reader.pages)
         return "pdf", text.strip()
 
     if suffix == ".docx":
         if DocxDocument is None:
             raise ValueError("DOCX support is not installed. Add `python-docx` and try again.")
-        document = DocxDocument(upload)
+        document = DocxDocument(str(path))
         text = "\n".join(paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip())
         return "docx", text.strip()
 
@@ -168,6 +179,15 @@ def rank_chunks(question: str, documents: list[UserDocument]) -> list[dict]:
             )
 
     return sorted(ranked, key=lambda item: item["score"], reverse=True)
+
+
+def delete_uploaded_file(storage_path: str) -> None:
+    if not storage_path:
+        return
+    try:
+        os.remove(storage_path)
+    except FileNotFoundError:
+        return
 
 
 def _generate_grounded_answer(question: str, prompt_context: list[str]) -> str:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase
@@ -7,7 +9,7 @@ from django.test import Client, TestCase
 from research_agent.models import SourceDocument, SourceSummary
 from research_agent.presentation import build_presentable_report
 
-from .models import ConversationMessage, ConversationSession, ResearchJob
+from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
 
 
 class SessionApiTests(TestCase):
@@ -66,18 +68,37 @@ class SessionApiTests(TestCase):
             content_type="text/plain",
         )
         upload_response = self.client.post("/api/documents", data={"file": upload})
-        self.assertEqual(upload_response.status_code, 201)
+        self.assertEqual(upload_response.status_code, 202)
+        upload_task_id = upload_response.json()["task_id"]
+        upload_status = self._wait_for_document_task(upload_task_id)
+        self.assertEqual(upload_status["state"], "completed")
+
+        self.assertEqual(UserDocument.objects.count(), 1)
+        self.assertEqual(DocumentTask.objects.filter(task_type="ingest").count(), 1)
 
         query_response = self.client.post(
             "/api/documents/query",
             data='{"question":"How are startups using AI in healthcare?"}',
             content_type="application/json",
         )
+        self.assertEqual(query_response.status_code, 202)
+        query_task_id = query_response.json()["task_id"]
+        query_status = self._wait_for_document_task(query_task_id)
 
-        self.assertEqual(query_response.status_code, 200)
-        payload = query_response.json()
+        self.assertEqual(query_status["state"], "completed")
+        payload = query_status["result"]
         self.assertIn("answer", payload)
         self.assertGreaterEqual(len(payload["citations"]), 1)
+
+    def _wait_for_document_task(self, task_id: str) -> dict:
+        for _ in range(30):
+            response = self.client.get(f"/api/documents/tasks/{task_id}")
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            if payload["state"] in {"completed", "failed"}:
+                return payload
+            time.sleep(0.1)
+        self.fail("Timed out waiting for document task to finish.")
 
 
 class PresentationTests(TestCase):

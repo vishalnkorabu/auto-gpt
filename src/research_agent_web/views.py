@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from threading import Thread
 from uuid import UUID
 
@@ -12,9 +13,9 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from .document_service import answer_document_question, ingest_uploaded_document
-from .models import ConversationMessage, ConversationSession, ResearchJob, UserDocument
-from .tasks import run_research_job, run_research_job_sync
+from .document_service import persist_upload
+from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
+from .tasks import run_document_task, run_document_task_sync, run_research_job, run_research_job_sync
 
 
 @require_GET
@@ -237,27 +238,18 @@ def jobs_view(request: HttpRequest) -> JsonResponse:
     if isinstance(user, JsonResponse):
         return user
 
-    jobs = ResearchJob.objects.select_related("session").filter(session__owner=user)[:30]
+    jobs = [
+        _serialize_research_job(job)
+        for job in ResearchJob.objects.select_related("session").filter(session__owner=user)[:30]
+    ]
+    document_jobs = [
+        _serialize_document_task(task)
+        for task in DocumentTask.objects.select_related("session", "document").filter(owner=user)[:30]
+    ]
+    combined = sorted(jobs + document_jobs, key=lambda item: item["created_at"], reverse=True)[:40]
     return JsonResponse(
         {
-            "jobs": [
-                {
-                    "id": str(job.id),
-                    "session_id": str(job.session_id),
-                    "session_title": job.session.title,
-                    "query": job.query,
-                    "mode": job.mode,
-                    "dry_run": job.dry_run,
-                    "state": job.state,
-                    "error": job.error,
-                    "output_dir": job.output_dir,
-                    "created_at": job.created_at.isoformat(),
-                    "updated_at": job.updated_at.isoformat(),
-                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                    "latest_progress": _latest_progress(job),
-                }
-                for job in jobs
-            ]
+            "jobs": combined
         }
     )
 
@@ -278,18 +270,37 @@ def documents_view(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"detail": "File is required."}, status=400)
 
     session_id = request.POST.get("session_id") or None
+    session = None
     if session_id:
         try:
-            _get_session(user, UUID(session_id))
+            session = _get_session(user, UUID(session_id))
         except ValueError as exc:
             return JsonResponse({"detail": str(exc)}, status=404)
 
     try:
-        document = ingest_uploaded_document(upload=upload, owner_id=user.id, session_id=session_id)
+        storage_path, inferred_type = persist_upload(upload=upload, owner_id=user.id)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=400)
 
-    return JsonResponse(_serialize_document(document), status=201)
+    document = UserDocument.objects.create(
+        owner=user,
+        session=session,
+        name=upload.name[:255],
+        file_type=inferred_type,
+        storage_path=storage_path,
+        content="",
+        status="processing",
+    )
+    task = DocumentTask.objects.create(
+        owner=user,
+        session=session,
+        document=document,
+        task_type="ingest",
+        title=f"Ingest {document.name}",
+        payload={"document_id": str(document.id), "name": document.name},
+    )
+    _dispatch_document_task(str(task.id))
+    return JsonResponse({"task_id": str(task.id), "document": _serialize_document(document)}, status=202)
 
 
 @csrf_exempt
@@ -304,27 +315,55 @@ def document_query(request: HttpRequest) -> JsonResponse:
     if len(question) < 3:
         return JsonResponse({"detail": "Question must be at least 3 characters."}, status=400)
 
-    documents = UserDocument.objects.prefetch_related("chunks").filter(owner=user)
-
     session_id = payload.get("session_id")
+    document_ids = payload.get("document_ids") or []
+    session = None
+    if session_id:
+        try:
+            session = _get_session(user, UUID(session_id))
+        except ValueError as exc:
+            return JsonResponse({"detail": str(exc)}, status=404)
+
+    documents = UserDocument.objects.filter(owner=user, status="processed")
     if session_id:
         documents = documents.filter(session_id=session_id)
-
-    document_ids = payload.get("document_ids") or []
     if document_ids:
         documents = documents.filter(id__in=document_ids)
+    if not documents.exists():
+        return JsonResponse({"detail": "No processed documents matched this query."}, status=404)
 
-    selected_documents = list(documents[:12])
-    if not selected_documents:
-        return JsonResponse({"detail": "No uploaded documents matched this query."}, status=404)
+    task = DocumentTask.objects.create(
+        owner=user,
+        session=session,
+        task_type="query",
+        title=question[:255],
+        payload={"question": question, "document_ids": document_ids},
+    )
+    _dispatch_document_task(str(task.id))
+    return JsonResponse({"task_id": str(task.id)}, status=202)
 
-    result = answer_document_question(question, selected_documents)
+
+@require_GET
+def document_task_status(request: HttpRequest, task_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    try:
+        task = DocumentTask.objects.select_related("document", "session").get(id=task_id, owner=user)
+    except DocumentTask.DoesNotExist:
+        return JsonResponse({"detail": "Task not found."}, status=404)
+
     return JsonResponse(
         {
-            "question": question,
-            "answer": result["answer"],
-            "citations": result["citations"],
-            "documents_used": len(result["citations"]),
+            "task_id": str(task.id),
+            "task_type": task.task_type,
+            "state": task.state,
+            "title": task.title,
+            "document": _serialize_document(task.document) if task.document_id else None,
+            "progress_messages": [event.message for event in task.progress_events.all()],
+            "result": task.result,
+            "error": task.error or None,
         }
     )
 
@@ -419,3 +458,62 @@ def _dispatch_research_job(job_id: str) -> None:
 def _latest_progress(job: ResearchJob) -> str:
     latest = job.progress_events.order_by("-sequence").first()
     return latest.message if latest else ""
+
+
+def _dispatch_document_task(task_id: str) -> None:
+    if "test" in sys.argv:
+        run_document_task_sync(task_id)
+        return
+
+    if settings.RESEARCH_USE_CELERY:
+        try:
+            run_document_task.delay(task_id)
+            return
+        except Exception:
+            pass
+
+    thread = Thread(target=run_document_task_sync, args=(task_id,), daemon=True)
+    thread.start()
+
+
+def _latest_document_progress(task: DocumentTask) -> str:
+    latest = task.progress_events.order_by("-sequence").first()
+    return latest.message if latest else ""
+
+
+def _serialize_research_job(job: ResearchJob) -> dict:
+    return {
+        "id": str(job.id),
+        "kind": "research",
+        "session_id": str(job.session_id),
+        "session_title": job.session.title,
+        "query": job.query,
+        "mode": job.mode,
+        "dry_run": job.dry_run,
+        "state": job.state,
+        "error": job.error,
+        "output_dir": job.output_dir,
+        "created_at": job.created_at.isoformat(),
+        "updated_at": job.updated_at.isoformat(),
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "latest_progress": _latest_progress(job),
+    }
+
+
+def _serialize_document_task(task: DocumentTask) -> dict:
+    return {
+        "id": str(task.id),
+        "kind": f"document-{task.task_type}",
+        "session_id": str(task.session_id) if task.session_id else None,
+        "session_title": task.session.title if task.session_id else "No session",
+        "query": task.title,
+        "mode": "document",
+        "dry_run": False,
+        "state": task.state,
+        "error": task.error,
+        "output_dir": "",
+        "created_at": task.created_at.isoformat(),
+        "updated_at": task.updated_at.isoformat(),
+        "completed_at": task.completed_at.isoformat() if task.completed_at else None,
+        "latest_progress": _latest_document_progress(task),
+    }

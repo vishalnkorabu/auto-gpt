@@ -95,6 +95,7 @@ class SavedReport(models.Model):
 
 class UserDocument(models.Model):
     STATUS_CHOICES = [
+        ("processing", "Processing"),
         ("processed", "Processed"),
         ("failed", "Failed"),
     ]
@@ -110,8 +111,9 @@ class UserDocument(models.Model):
     )
     name = models.CharField(max_length=255)
     file_type = models.CharField(max_length=32)
+    storage_path = models.CharField(max_length=500, blank=True, default="")
     content = models.TextField()
-    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="processed")
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="processing")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -131,6 +133,48 @@ class DocumentChunk(models.Model):
         unique_together = ("document", "chunk_index")
 
 
+class DocumentTask(models.Model):
+    TASK_CHOICES = [
+        ("ingest", "Ingest"),
+        ("query", "Query"),
+    ]
+    STATE_CHOICES = [
+        ("queued", "Queued"),
+        ("running", "Running"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="document_tasks")
+    session = models.ForeignKey(
+        ConversationSession,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="document_tasks",
+    )
+    document = models.ForeignKey(
+        UserDocument,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="tasks",
+    )
+    task_type = models.CharField(max_length=16, choices=TASK_CHOICES)
+    title = models.CharField(max_length=255)
+    state = models.CharField(max_length=16, choices=STATE_CHOICES, default="queued")
+    payload = models.JSONField(default=dict, blank=True)
+    result = models.JSONField(null=True, blank=True)
+    error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+
 class JobProgressEvent(models.Model):
     id = models.BigAutoField(primary_key=True)
     job = models.ForeignKey(ResearchJob, on_delete=models.CASCADE, related_name="progress_events")
@@ -141,3 +185,15 @@ class JobProgressEvent(models.Model):
     class Meta:
         ordering = ["sequence", "id"]
         unique_together = ("job", "sequence")
+
+
+class DocumentTaskProgressEvent(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    task = models.ForeignKey(DocumentTask, on_delete=models.CASCADE, related_name="progress_events")
+    sequence = models.PositiveIntegerField()
+    message = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["sequence", "id"]
+        unique_together = ("task", "sequence")

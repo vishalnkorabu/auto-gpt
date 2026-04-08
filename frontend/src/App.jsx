@@ -26,14 +26,19 @@ export default function App() {
   const [docError, setDocError] = useState("");
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [queryingDocuments, setQueryingDocuments] = useState(false);
+  const [documentProgressMessages, setDocumentProgressMessages] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [jobsFilter, setJobsFilter] = useState("all");
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
+  const documentPollRef = useRef(null);
 
   useEffect(() => {
     void bootstrap();
-    return () => window.clearInterval(pollRef.current);
+    return () => {
+      window.clearInterval(pollRef.current);
+      window.clearInterval(documentPollRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -58,7 +63,11 @@ export default function App() {
   }
 
   async function apiFetch(url, options = {}) {
-    const headers = options.body instanceof FormData ? options.headers || {} : { "Content-Type": "application/json", ...(options.headers || {}) };
+    const headers =
+      options.body instanceof FormData
+        ? options.headers || {}
+        : { "Content-Type": "application/json", ...(options.headers || {}) };
+
     const response = await fetch(url, {
       credentials: "include",
       headers,
@@ -97,6 +106,8 @@ export default function App() {
     setMessages([]);
     setCurrentSessionId(null);
     setDocAnswer(null);
+    setDocError("");
+    setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
     window.localStorage.removeItem(SESSION_KEY);
   }
@@ -141,6 +152,8 @@ export default function App() {
     setCurrentSessionId(null);
     setMessages([]);
     setDocAnswer(null);
+    setDocError("");
+    setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
     window.localStorage.removeItem(SESSION_KEY);
     await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
@@ -267,18 +280,21 @@ export default function App() {
     }
 
     setDocError("");
+    setDocAnswer(null);
+    setDocumentProgressMessages(["Queued document ingestion job."]);
     setUploadingDocument(true);
     try {
-      await apiFetch("/api/documents", {
+      const data = await apiFetch("/api/documents", {
         method: "POST",
         body: formData,
       });
-      if (fileInputRef.current) {
-        fileInputRef.current.value = "";
-      }
-      await loadDocuments();
+      documentPollRef.current = window.setInterval(() => {
+        void pollDocumentTask(data.task_id, "ingest");
+      }, 1200);
+      await pollDocumentTask(data.task_id, "ingest", true);
     } catch (err) {
       setDocError(err.message);
+      setDocumentProgressMessages([]);
     } finally {
       setUploadingDocument(false);
     }
@@ -290,6 +306,8 @@ export default function App() {
     if (!trimmed || queryingDocuments) return;
 
     setDocError("");
+    setDocAnswer(null);
+    setDocumentProgressMessages(["Queued document query job."]);
     setQueryingDocuments(true);
     try {
       const payload = {
@@ -301,11 +319,49 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(payload),
       });
-      setDocAnswer(result);
+      documentPollRef.current = window.setInterval(() => {
+        void pollDocumentTask(result.task_id, "query");
+      }, 1200);
+      await pollDocumentTask(result.task_id, "query", true);
     } catch (err) {
       setDocError(err.message);
+      setDocumentProgressMessages([]);
     } finally {
       setQueryingDocuments(false);
+    }
+  }
+
+  async function pollDocumentTask(taskId, kind, immediate = false) {
+    try {
+      const data = await apiFetch(`/api/documents/tasks/${taskId}`);
+      setDocumentProgressMessages(data.progress_messages || []);
+
+      if (data.state === "completed") {
+        window.clearInterval(documentPollRef.current);
+        documentPollRef.current = null;
+        if (kind === "ingest") {
+          if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+          }
+          setDocumentProgressMessages(["Document ingestion complete."]);
+          await Promise.all([loadDocuments(), loadJobs()]);
+        } else {
+          setDocAnswer(data.result);
+          await loadJobs();
+        }
+      } else if (data.state === "failed") {
+        window.clearInterval(documentPollRef.current);
+        documentPollRef.current = null;
+        setDocError(data.error || "Document task failed.");
+        await Promise.all([loadDocuments(), loadJobs()]);
+      } else if (immediate) {
+        return;
+      }
+    } catch (err) {
+      window.clearInterval(documentPollRef.current);
+      documentPollRef.current = null;
+      setDocError(err.message);
+      await loadJobs();
     }
   }
 
@@ -368,15 +424,8 @@ export default function App() {
         </div>
         <div className="session-list">
           {sessions.map((session) => (
-            <div
-              key={session.id}
-              className={`session-card ${session.id === currentSessionId ? "active" : ""}`}
-            >
-              <button
-                type="button"
-                className="session-main"
-                onClick={() => loadSessionMessages(session.id)}
-              >
+            <div key={session.id} className={`session-card ${session.id === currentSessionId ? "active" : ""}`}>
+              <button type="button" className="session-main" onClick={() => loadSessionMessages(session.id)}>
                 {editingSessionId === session.id ? (
                   <input
                     className="session-edit"
@@ -508,6 +557,7 @@ export default function App() {
         docAnswer={docAnswer}
         docError={docError}
         queryingDocuments={queryingDocuments}
+        documentProgressMessages={documentProgressMessages}
         selectedDocumentIds={selectedDocumentIds}
         toggleDocumentSelection={toggleDocumentSelection}
         onUpload={uploadDocument}
@@ -652,7 +702,9 @@ function JobsDrawer({ open, onClose, jobs, jobsFilter, onFilterChange, onRefresh
                 </div>
                 <span className={`status-pill ${job.state}`}>{job.state}</span>
               </div>
-              <div className="job-meta">Mode {job.mode} · {job.dry_run ? "Dry run" : "Live run"}</div>
+              <div className="job-meta">
+                {job.kind === "research" ? `Mode ${job.mode} · ${job.dry_run ? "Dry run" : "Live run"}` : `Type ${job.kind}`}
+              </div>
               {job.latest_progress ? <div className="job-progress">{job.latest_progress}</div> : null}
               {job.error ? <div className="job-error">{job.error}</div> : null}
             </article>
@@ -676,6 +728,7 @@ function DocumentsDrawer({
   docAnswer,
   docError,
   queryingDocuments,
+  documentProgressMessages,
   selectedDocumentIds,
   toggleDocumentSelection,
   onUpload,
@@ -698,7 +751,11 @@ function DocumentsDrawer({
             <div className="panel-title-row">
               <div>
                 <h3>Upload</h3>
-                <p>{currentSessionId ? "New uploads will be attached to the active chat session." : "Uploads will be available across your account until attached to a session."}</p>
+                <p>
+                  {currentSessionId
+                    ? "New uploads will be attached to the active chat session."
+                    : "Uploads will be available across your account until attached to a session."}
+                </p>
               </div>
             </div>
             <form className="upload-form" onSubmit={onUpload}>
@@ -707,6 +764,16 @@ function DocumentsDrawer({
                 {uploadingDocument ? "Uploading..." : "Upload document"}
               </button>
             </form>
+            {!!documentProgressMessages.length && (
+              <div className="progress-feed compact">
+                {documentProgressMessages.slice(-4).map((message, index) => (
+                  <div className="progress-item" key={`${message}-${index}`}>
+                    <span className="progress-dot" />
+                    <span>{message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="panel-card">
@@ -736,7 +803,9 @@ function DocumentsDrawer({
                     {docAnswer.citations.map((citation) => (
                       <div className="support-card" key={`${citation.document_id}-${citation.chunk_index}`}>
                         <div className="support-name">{citation.name}</div>
-                        <div className="source-meta">{citation.file_type.toUpperCase()} · chunk {citation.chunk_index}</div>
+                        <div className="source-meta">
+                          {citation.file_type.toUpperCase()} · chunk {citation.chunk_index}
+                        </div>
                         <p>{citation.excerpt}</p>
                       </div>
                     ))}
@@ -759,12 +828,13 @@ function DocumentsDrawer({
                   <input
                     type="checkbox"
                     checked={selectedDocumentIds.includes(document.id)}
+                    disabled={document.status !== "processed"}
                     onChange={() => toggleDocumentSelection(document.id)}
                   />
                   <div>
                     <div className="document-name">{document.name}</div>
                     <div className="document-meta">
-                      {document.file_type.toUpperCase()} · {document.chunk_count} chunks
+                      {document.file_type.toUpperCase()} · {document.chunk_count} chunks · {document.status}
                       {document.session_title ? ` · ${document.session_title}` : " · account-wide"}
                     </div>
                   </div>

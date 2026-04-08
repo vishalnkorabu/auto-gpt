@@ -15,6 +15,7 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 - Persists conversation history and reports in a local SQLite database
 - Supports document upload and grounded document Q&A inside the same app
 - Includes a UI job-status panel for queued/running/completed work
+- Queues document ingestion and document query work through the same Celery/local job runner used for research
 
 ## Tech Stack
 
@@ -147,6 +148,8 @@ Tables implemented:
 - `SavedReport`: persisted report records with confidence and source counts
 - `UserDocument`: uploaded user-owned files available for document Q&A
 - `DocumentChunk`: extracted document chunks used for retrieval during document queries
+- `DocumentTask`: queued document ingest/query jobs
+- `DocumentTaskProgressEvent`: progress events for document jobs
 
 This schema gives you:
 - persistent chat history across app restarts
@@ -173,6 +176,7 @@ The output directory will include:
 - Set `MAX_PAPER_RESULTS=0` to disable Semantic Scholar paper search when rate-limited.
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
 - Uploaded `.txt`, `.md`, `.csv`, `.json`, `.pdf`, and `.docx` files can be queried from the Documents drawer.
+- Large document uploads and document Q&A now run as background jobs instead of blocking the request.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - Basic session/report/API tests are available via `python manage.py test`
 - Jobs are now intended to run via Celery/Redis instead of in-process threads
