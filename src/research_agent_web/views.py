@@ -12,7 +12,8 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from .models import ConversationMessage, ConversationSession, ResearchJob
+from .document_service import answer_document_question, ingest_uploaded_document
+from .models import ConversationMessage, ConversationSession, ResearchJob, UserDocument
 from .tasks import run_research_job, run_research_job_sync
 
 
@@ -230,6 +231,104 @@ def chat_status(request: HttpRequest, job_id: UUID) -> JsonResponse:
     return JsonResponse(payload)
 
 
+@require_GET
+def jobs_view(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    jobs = ResearchJob.objects.select_related("session").filter(session__owner=user)[:30]
+    return JsonResponse(
+        {
+            "jobs": [
+                {
+                    "id": str(job.id),
+                    "session_id": str(job.session_id),
+                    "session_title": job.session.title,
+                    "query": job.query,
+                    "mode": job.mode,
+                    "dry_run": job.dry_run,
+                    "state": job.state,
+                    "error": job.error,
+                    "output_dir": job.output_dir,
+                    "created_at": job.created_at.isoformat(),
+                    "updated_at": job.updated_at.isoformat(),
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                    "latest_progress": _latest_progress(job),
+                }
+                for job in jobs
+            ]
+        }
+    )
+
+
+@csrf_exempt
+@require_http_methods(["GET", "POST"])
+def documents_view(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    if request.method == "GET":
+        documents = UserDocument.objects.select_related("session").filter(owner=user)[:50]
+        return JsonResponse({"documents": [_serialize_document(document) for document in documents]})
+
+    upload = request.FILES.get("file")
+    if upload is None:
+        return JsonResponse({"detail": "File is required."}, status=400)
+
+    session_id = request.POST.get("session_id") or None
+    if session_id:
+        try:
+            _get_session(user, UUID(session_id))
+        except ValueError as exc:
+            return JsonResponse({"detail": str(exc)}, status=404)
+
+    try:
+        document = ingest_uploaded_document(upload=upload, owner_id=user.id, session_id=session_id)
+    except ValueError as exc:
+        return JsonResponse({"detail": str(exc)}, status=400)
+
+    return JsonResponse(_serialize_document(document), status=201)
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def document_query(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    payload = _json_body(request)
+    question = (payload.get("question") or "").strip()
+    if len(question) < 3:
+        return JsonResponse({"detail": "Question must be at least 3 characters."}, status=400)
+
+    documents = UserDocument.objects.prefetch_related("chunks").filter(owner=user)
+
+    session_id = payload.get("session_id")
+    if session_id:
+        documents = documents.filter(session_id=session_id)
+
+    document_ids = payload.get("document_ids") or []
+    if document_ids:
+        documents = documents.filter(id__in=document_ids)
+
+    selected_documents = list(documents[:12])
+    if not selected_documents:
+        return JsonResponse({"detail": "No uploaded documents matched this query."}, status=404)
+
+    result = answer_document_question(question, selected_documents)
+    return JsonResponse(
+        {
+            "question": question,
+            "answer": result["answer"],
+            "citations": result["citations"],
+            "documents_used": len(result["citations"]),
+        }
+    )
+
+
 def _require_user(request: HttpRequest) -> User | JsonResponse:
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required."}, status=401)
@@ -280,6 +379,20 @@ def _serialize_message(message: ConversationMessage | None) -> dict | None:
     }
 
 
+def _serialize_document(document: UserDocument) -> dict:
+    return {
+        "id": str(document.id),
+        "name": document.name,
+        "file_type": document.file_type,
+        "status": document.status,
+        "session_id": str(document.session_id) if document.session_id else None,
+        "session_title": document.session.title if document.session_id else None,
+        "chunk_count": document.chunks.count(),
+        "created_at": document.created_at.isoformat(),
+        "updated_at": document.updated_at.isoformat(),
+    }
+
+
 def _json_body(request: HttpRequest) -> dict:
     if not request.body:
         return {}
@@ -301,3 +414,8 @@ def _dispatch_research_job(job_id: str) -> None:
 
     thread = Thread(target=run_research_job_sync, args=(job_id,), daemon=True)
     thread.start()
+
+
+def _latest_progress(job: ResearchJob) -> str:
+    latest = job.progress_events.order_by("-sequence").first()
+    return latest.message if latest else ""

@@ -5,11 +5,15 @@ const SESSION_KEY = "research-agent-session-id";
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [jobs, setJobs] = useState([]);
+  const [documents, setDocuments] = useState([]);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState("multi");
   const [dryRun, setDryRun] = useState(false);
   const [drawerReport, setDrawerReport] = useState(null);
+  const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
+  const [documentsDrawerOpen, setDocumentsDrawerOpen] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingTitle, setEditingTitle] = useState("");
@@ -17,6 +21,14 @@ export default function App() {
   const [credentials, setCredentials] = useState({ username: "", password: "" });
   const [user, setUser] = useState(null);
   const [authError, setAuthError] = useState("");
+  const [docQuestion, setDocQuestion] = useState("");
+  const [docAnswer, setDocAnswer] = useState(null);
+  const [docError, setDocError] = useState("");
+  const [uploadingDocument, setUploadingDocument] = useState(false);
+  const [queryingDocuments, setQueryingDocuments] = useState(false);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
+  const [jobsFilter, setJobsFilter] = useState("all");
+  const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
   useEffect(() => {
@@ -24,11 +36,20 @@ export default function App() {
     return () => window.clearInterval(pollRef.current);
   }, []);
 
+  useEffect(() => {
+    if (!jobsDrawerOpen || !user) return undefined;
+    void loadJobs();
+    const intervalId = window.setInterval(() => {
+      void loadJobs();
+    }, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [jobsDrawerOpen, user]);
+
   async function bootstrap() {
     const me = await apiFetch("/api/auth/me");
     if (me.authenticated) {
       setUser(me.user);
-      await loadSessions();
+      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
       const stored = window.localStorage.getItem(SESSION_KEY);
       if (stored) {
         await loadSessionMessages(stored);
@@ -37,9 +58,10 @@ export default function App() {
   }
 
   async function apiFetch(url, options = {}) {
+    const headers = options.body instanceof FormData ? options.headers || {} : { "Content-Type": "application/json", ...(options.headers || {}) };
     const response = await fetch(url, {
       credentials: "include",
-      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      headers,
       ...options,
     });
     const data = await response.json().catch(() => ({}));
@@ -60,7 +82,7 @@ export default function App() {
       });
       setUser(data.user);
       setCredentials({ username: "", password: "" });
-      await loadSessions();
+      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
     } catch (err) {
       setAuthError(err.message);
     }
@@ -70,14 +92,28 @@ export default function App() {
     await apiFetch("/api/auth/logout", { method: "POST", body: "{}" });
     setUser(null);
     setSessions([]);
+    setJobs([]);
+    setDocuments([]);
     setMessages([]);
     setCurrentSessionId(null);
+    setDocAnswer(null);
+    setSelectedDocumentIds([]);
     window.localStorage.removeItem(SESSION_KEY);
   }
 
   async function loadSessions() {
     const data = await apiFetch("/api/sessions");
     setSessions(data.sessions || []);
+  }
+
+  async function loadJobs() {
+    const data = await apiFetch("/api/jobs");
+    setJobs(data.jobs || []);
+  }
+
+  async function loadDocuments() {
+    const data = await apiFetch("/api/documents");
+    setDocuments(data.documents || []);
   }
 
   async function loadSessionMessages(sessionId) {
@@ -104,8 +140,10 @@ export default function App() {
   async function startNewSession() {
     setCurrentSessionId(null);
     setMessages([]);
+    setDocAnswer(null);
+    setSelectedDocumentIds([]);
     window.localStorage.removeItem(SESSION_KEY);
-    await loadSessions();
+    await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
   }
 
   async function renameSession(sessionId) {
@@ -125,7 +163,7 @@ export default function App() {
     if (sessionId === currentSessionId) {
       await startNewSession();
     } else {
-      await loadSessions();
+      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
     }
   }
 
@@ -151,7 +189,7 @@ export default function App() {
 
       setCurrentSessionId(startData.session_id);
       window.localStorage.setItem(SESSION_KEY, startData.session_id);
-      await loadSessions();
+      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
 
       const loadingId = `${startData.job_id}-loading`;
       setMessages((prev) => [
@@ -190,7 +228,7 @@ export default function App() {
           )
         );
         setLoading(false);
-        await loadSessions();
+        await Promise.all([loadSessions(), loadJobs()]);
       } else if (data.state === "failed") {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -200,6 +238,7 @@ export default function App() {
           )
         );
         setLoading(false);
+        await loadJobs();
       } else if (immediate) {
         return;
       }
@@ -212,7 +251,68 @@ export default function App() {
         )
       );
       setLoading(false);
+      await loadJobs();
     }
+  }
+
+  async function uploadDocument(event) {
+    event.preventDefault();
+    const file = fileInputRef.current?.files?.[0];
+    if (!file || uploadingDocument) return;
+
+    const formData = new FormData();
+    formData.append("file", file);
+    if (currentSessionId) {
+      formData.append("session_id", currentSessionId);
+    }
+
+    setDocError("");
+    setUploadingDocument(true);
+    try {
+      await apiFetch("/api/documents", {
+        method: "POST",
+        body: formData,
+      });
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+      await loadDocuments();
+    } catch (err) {
+      setDocError(err.message);
+    } finally {
+      setUploadingDocument(false);
+    }
+  }
+
+  async function submitDocumentQuestion(event) {
+    event.preventDefault();
+    const trimmed = docQuestion.trim();
+    if (!trimmed || queryingDocuments) return;
+
+    setDocError("");
+    setQueryingDocuments(true);
+    try {
+      const payload = {
+        question: trimmed,
+        session_id: currentSessionId,
+        document_ids: selectedDocumentIds,
+      };
+      const result = await apiFetch("/api/documents/query", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setDocAnswer(result);
+    } catch (err) {
+      setDocError(err.message);
+    } finally {
+      setQueryingDocuments(false);
+    }
+  }
+
+  function toggleDocumentSelection(documentId) {
+    setSelectedDocumentIds((prev) =>
+      prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId]
+    );
   }
 
   if (!user) {
@@ -247,13 +347,15 @@ export default function App() {
     );
   }
 
+  const filteredJobs = jobsFilter === "all" ? jobs : jobs.filter((job) => job.state === jobsFilter);
+
   return (
     <div className="app app-layout">
       <aside className="sidebar">
         <div className="sidebar-header">
           <div>
             <h2>History</h2>
-            <p>{user.username}'s local research sessions.</p>
+            <p>{user.username}&apos;s local research sessions.</p>
           </div>
           <div className="sidebar-actions">
             <button className="secondary-button" type="button" onClick={startNewSession}>
@@ -313,6 +415,20 @@ export default function App() {
             </div>
           ))}
         </div>
+
+        <div className="sidebar-section">
+          <div className="sidebar-section-header">
+            <h3>Document Library</h3>
+            <button className="mini-button" type="button" onClick={() => setDocumentsDrawerOpen(true)}>
+              Open
+            </button>
+          </div>
+          <p className="sidebar-note">Upload docs into the current workspace and query them alongside your research flow.</p>
+          <div className="sidebar-stat-row">
+            <span>{documents.length} documents</span>
+            <span>{jobs.filter((job) => job.state === "running").length} running jobs</span>
+          </div>
+        </div>
       </aside>
 
       <div className="main-pane">
@@ -333,6 +449,12 @@ export default function App() {
               <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
               Dry run
             </label>
+            <button className="secondary-button" type="button" onClick={() => setJobsDrawerOpen(true)}>
+              Job status
+            </button>
+            <button className="secondary-button" type="button" onClick={() => setDocumentsDrawerOpen(true)}>
+              Documents
+            </button>
           </div>
         </header>
 
@@ -366,6 +488,31 @@ export default function App() {
       </div>
 
       <SourcesDrawer report={drawerReport} onClose={() => setDrawerReport(null)} />
+      <JobsDrawer
+        open={jobsDrawerOpen}
+        onClose={() => setJobsDrawerOpen(false)}
+        jobs={filteredJobs}
+        jobsFilter={jobsFilter}
+        onFilterChange={setJobsFilter}
+        onRefresh={() => void loadJobs()}
+      />
+      <DocumentsDrawer
+        open={documentsDrawerOpen}
+        onClose={() => setDocumentsDrawerOpen(false)}
+        documents={documents}
+        currentSessionId={currentSessionId}
+        fileInputRef={fileInputRef}
+        uploadingDocument={uploadingDocument}
+        docQuestion={docQuestion}
+        setDocQuestion={setDocQuestion}
+        docAnswer={docAnswer}
+        docError={docError}
+        queryingDocuments={queryingDocuments}
+        selectedDocumentIds={selectedDocumentIds}
+        toggleDocumentSelection={toggleDocumentSelection}
+        onUpload={uploadDocument}
+        onAsk={submitDocumentQuestion}
+      />
     </div>
   );
 }
@@ -458,6 +605,176 @@ function SourcesDrawer({ report, onClose }) {
         </div>
       </div>
       {report && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
+    </aside>
+  );
+}
+
+function JobsDrawer({ open, onClose, jobs, jobsFilter, onFilterChange, onRefresh }) {
+  return (
+    <aside className={`drawer ${open ? "open" : ""}`}>
+      <div className="drawer-panel drawer-panel-wide">
+        <div className="drawer-header">
+          <div>
+            <div className="drawer-kicker">Operations</div>
+            <h2>Job status</h2>
+          </div>
+          <div className="action-row">
+            <button className="secondary-button" type="button" onClick={onRefresh}>
+              Refresh
+            </button>
+            <button className="secondary-button" onClick={onClose} type="button">
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="drawer-content">
+          <div className="filter-row">
+            {["all", "queued", "running", "completed", "failed"].map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`mini-button ${jobsFilter === value ? "active" : ""}`}
+                onClick={() => onFilterChange(value)}
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+          {jobs.length === 0 ? <p className="placeholder">No jobs yet.</p> : null}
+          {jobs.map((job) => (
+            <article className="job-card" key={job.id}>
+              <div className="job-row">
+                <div>
+                  <div className="job-query">{job.query}</div>
+                  <div className="job-meta">
+                    {job.session_title} · {new Date(job.created_at).toLocaleString()}
+                  </div>
+                </div>
+                <span className={`status-pill ${job.state}`}>{job.state}</span>
+              </div>
+              <div className="job-meta">Mode {job.mode} · {job.dry_run ? "Dry run" : "Live run"}</div>
+              {job.latest_progress ? <div className="job-progress">{job.latest_progress}</div> : null}
+              {job.error ? <div className="job-error">{job.error}</div> : null}
+            </article>
+          ))}
+        </div>
+      </div>
+      {open && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
+    </aside>
+  );
+}
+
+function DocumentsDrawer({
+  open,
+  onClose,
+  documents,
+  currentSessionId,
+  fileInputRef,
+  uploadingDocument,
+  docQuestion,
+  setDocQuestion,
+  docAnswer,
+  docError,
+  queryingDocuments,
+  selectedDocumentIds,
+  toggleDocumentSelection,
+  onUpload,
+  onAsk,
+}) {
+  return (
+    <aside className={`drawer ${open ? "open" : ""}`}>
+      <div className="drawer-panel drawer-panel-wide">
+        <div className="drawer-header">
+          <div>
+            <div className="drawer-kicker">Documents</div>
+            <h2>Upload and query files</h2>
+          </div>
+          <button className="secondary-button" onClick={onClose} type="button">
+            Close
+          </button>
+        </div>
+        <div className="drawer-content">
+          <section className="panel-card">
+            <div className="panel-title-row">
+              <div>
+                <h3>Upload</h3>
+                <p>{currentSessionId ? "New uploads will be attached to the active chat session." : "Uploads will be available across your account until attached to a session."}</p>
+              </div>
+            </div>
+            <form className="upload-form" onSubmit={onUpload}>
+              <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.json,.pdf,.docx" />
+              <button className="secondary-button" type="submit" disabled={uploadingDocument}>
+                {uploadingDocument ? "Uploading..." : "Upload document"}
+              </button>
+            </form>
+          </section>
+
+          <section className="panel-card">
+            <div className="panel-title-row">
+              <div>
+                <h3>Ask documents</h3>
+                <p>Select specific files if you want a narrower answer.</p>
+              </div>
+            </div>
+            <form className="doc-query-form" onSubmit={onAsk}>
+              <textarea
+                value={docQuestion}
+                onChange={(event) => setDocQuestion(event.target.value)}
+                placeholder="What does the uploaded material say about adoption risk?"
+              />
+              <button className="secondary-button" type="submit" disabled={queryingDocuments || !docQuestion.trim()}>
+                {queryingDocuments ? "Answering..." : "Query documents"}
+              </button>
+            </form>
+            {docError ? <div className="auth-error">{docError}</div> : null}
+            {docAnswer ? (
+              <article className="doc-answer-card">
+                <div className="drawer-kicker">Answer</div>
+                <pre>{docAnswer.answer}</pre>
+                {!!docAnswer.citations?.length && (
+                  <div className="support-list">
+                    {docAnswer.citations.map((citation) => (
+                      <div className="support-card" key={`${citation.document_id}-${citation.chunk_index}`}>
+                        <div className="support-name">{citation.name}</div>
+                        <div className="source-meta">{citation.file_type.toUpperCase()} · chunk {citation.chunk_index}</div>
+                        <p>{citation.excerpt}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </article>
+            ) : null}
+          </section>
+
+          <section className="panel-card">
+            <div className="panel-title-row">
+              <div>
+                <h3>Library</h3>
+                <p>{documents.length} uploaded files.</p>
+              </div>
+            </div>
+            <div className="document-list">
+              {documents.map((document) => (
+                <label className="document-card" key={document.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedDocumentIds.includes(document.id)}
+                    onChange={() => toggleDocumentSelection(document.id)}
+                  />
+                  <div>
+                    <div className="document-name">{document.name}</div>
+                    <div className="document-meta">
+                      {document.file_type.toUpperCase()} · {document.chunk_count} chunks
+                      {document.session_title ? ` · ${document.session_title}` : " · account-wide"}
+                    </div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </section>
+        </div>
+      </div>
+      {open && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
     </aside>
   );
 }

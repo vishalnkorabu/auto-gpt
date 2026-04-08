@@ -93,6 +93,44 @@ class SavedReport(models.Model):
         ordering = ["-created_at"]
 
 
+class UserDocument(models.Model):
+    STATUS_CHOICES = [
+        ("processed", "Processed"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name="research_documents")
+    session = models.ForeignKey(
+        ConversationSession,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="documents",
+    )
+    name = models.CharField(max_length=255)
+    file_type = models.CharField(max_length=32)
+    content = models.TextField()
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="processed")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+
+
+class DocumentChunk(models.Model):
+    id = models.BigAutoField(primary_key=True)
+    document = models.ForeignKey(UserDocument, on_delete=models.CASCADE, related_name="chunks")
+    chunk_index = models.PositiveIntegerField()
+    content = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["chunk_index", "id"]
+        unique_together = ("document", "chunk_index")
+
+
 class JobProgressEvent(models.Model):
     id = models.BigAutoField(primary_key=True)
     job = models.ForeignKey(ResearchJob, on_delete=models.CASCADE, related_name="progress_events")

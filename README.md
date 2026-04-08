@@ -13,6 +13,8 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 - Builds a FAISS index for source retrieval
 - Provides a React chat UI for real-time query interaction
 - Persists conversation history and reports in a local SQLite database
+- Supports document upload and grounded document Q&A inside the same app
+- Includes a UI job-status panel for queued/running/completed work
 
 ## Tech Stack
 
@@ -143,6 +145,8 @@ Tables implemented:
 - `ResearchJob`: one generation run tied to a session and its initiating user message
 - `JobProgressEvent`: ordered progress messages used by the live generating UI
 - `SavedReport`: persisted report records with confidence and source counts
+- `UserDocument`: uploaded user-owned files available for document Q&A
+- `DocumentChunk`: extracted document chunks used for retrieval during document queries
 
 This schema gives you:
 - persistent chat history across app restarts
@@ -168,6 +172,7 @@ The output directory will include:
 - LLM provider defaults to Groq (`LLM_PROVIDER=groq`), with optional OpenAI fallback.
 - Set `MAX_PAPER_RESULTS=0` to disable Semantic Scholar paper search when rate-limited.
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
+- Uploaded `.txt`, `.md`, `.csv`, `.json`, `.pdf`, and `.docx` files can be queried from the Documents drawer.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - Basic session/report/API tests are available via `python manage.py test`
 - Jobs are now intended to run via Celery/Redis instead of in-process threads

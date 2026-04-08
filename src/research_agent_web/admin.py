@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.contrib import admin
 
-from .models import ConversationMessage, ConversationSession, JobProgressEvent, ResearchJob, SavedReport
+from .models import ConversationMessage, ConversationSession, DocumentChunk, JobProgressEvent, ResearchJob, SavedReport, UserDocument
 
 
 @admin.register(ConversationSession)
@@ -35,3 +35,16 @@ class JobProgressEventAdmin(admin.ModelAdmin):
 class SavedReportAdmin(admin.ModelAdmin):
     list_display = ("headline", "session", "confidence_score", "sources_count", "created_at")
     search_fields = ("headline",)
+
+
+@admin.register(UserDocument)
+class UserDocumentAdmin(admin.ModelAdmin):
+    list_display = ("name", "owner", "file_type", "status", "updated_at")
+    list_filter = ("file_type", "status")
+    search_fields = ("name", "content")
+
+
+@admin.register(DocumentChunk)
+class DocumentChunkAdmin(admin.ModelAdmin):
+    list_display = ("document", "chunk_index", "created_at")
+    search_fields = ("content",)

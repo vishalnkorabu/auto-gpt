@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from django.contrib.auth.models import User
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase
 
 from research_agent.models import SourceDocument, SourceSummary
 from research_agent.presentation import build_presentable_report
 
-from .models import ConversationSession
+from .models import ConversationMessage, ConversationSession, ResearchJob
 
 
 class SessionApiTests(TestCase):
@@ -40,6 +41,43 @@ class SessionApiTests(TestCase):
         anon = Client()
         response = anon.get("/api/sessions")
         self.assertEqual(response.status_code, 401)
+
+    def test_jobs_endpoint_returns_only_current_user_jobs(self) -> None:
+        session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI")
+        user_message = ConversationMessage.objects.create(session=session, role="user", content="Question")
+        ResearchJob.objects.create(session=session, user_message=user_message, query="Question", state="queued")
+
+        other_user = User.objects.create_user(username="other", password="secret123")
+        other_session = ConversationSession.objects.create(owner=other_user, title="Other")
+        other_message = ConversationMessage.objects.create(session=other_session, role="user", content="Other question")
+        ResearchJob.objects.create(session=other_session, user_message=other_message, query="Other question", state="queued")
+
+        response = self.client.get("/api/jobs")
+
+        self.assertEqual(response.status_code, 200)
+        jobs = response.json()["jobs"]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["query"], "Question")
+
+    def test_upload_and_query_documents(self) -> None:
+        upload = SimpleUploadedFile(
+            "healthcare-note.txt",
+            b"Healthcare startups use AI to reduce clinician admin burden and improve triage speed.",
+            content_type="text/plain",
+        )
+        upload_response = self.client.post("/api/documents", data={"file": upload})
+        self.assertEqual(upload_response.status_code, 201)
+
+        query_response = self.client.post(
+            "/api/documents/query",
+            data='{"question":"How are startups using AI in healthcare?"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(query_response.status_code, 200)
+        payload = query_response.json()
+        self.assertIn("answer", payload)
+        self.assertGreaterEqual(len(payload["citations"]), 1)
 
 
 class PresentationTests(TestCase):
