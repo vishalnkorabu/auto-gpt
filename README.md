@@ -17,6 +17,9 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 - Includes a UI job-status panel for queued/running/completed work
 - Queues document ingestion and document query work through the same Celery/local job runner used for research
 - Deletes raw uploaded files after successful ingestion so only extracted text/chunks remain in the app
+- Exports saved answers as PDF or DOCX
+- Supports searching across prior sessions
+- Includes quick/standard/deep research depth presets
 
 ## Tech Stack
 
@@ -180,6 +183,7 @@ The output directory will include:
 - Large document uploads and document Q&A now run as background jobs instead of blocking the request.
 - Document tasks can be canceled or retried from the UI job panel.
 - Document Q&A can optionally blend uploaded-document evidence with live web research in one hybrid answer.
+- Install `python-docx` and `reportlab` to enable DOCX/PDF export in your current environment.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - Basic session/report/API tests are available via `python manage.py test`
 - Jobs are now intended to run via Celery/Redis instead of in-process threads

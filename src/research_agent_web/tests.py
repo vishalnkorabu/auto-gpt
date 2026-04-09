@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from importlib.util import find_spec
 
 from django.contrib.auth.models import User
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -21,11 +22,12 @@ class SessionApiTests(TestCase):
     def test_create_rename_and_delete_session(self) -> None:
         create_response = self.client.post(
             "/api/sessions",
-            data='{"title":"Healthcare AI","mode":"multi","dry_run":true}',
+            data='{"title":"Healthcare AI","mode":"multi","research_depth":"deep","dry_run":true}',
             content_type="application/json",
         )
         self.assertEqual(create_response.status_code, 201)
         session_id = create_response.json()["id"]
+        self.assertEqual(create_response.json()["research_depth"], "deep")
 
         rename_response = self.client.patch(
             f"/api/sessions/{session_id}",
@@ -43,6 +45,19 @@ class SessionApiTests(TestCase):
         anon = Client()
         response = anon.get("/api/sessions")
         self.assertEqual(response.status_code, 401)
+
+    def test_sessions_search_matches_titles_and_messages(self) -> None:
+        session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI", research_depth="standard")
+        ConversationMessage.objects.create(session=session, role="user", content="impact on startups")
+        ConversationSession.objects.create(owner=self.user, title="Climate Tech", research_depth="standard")
+
+        title_response = self.client.get("/api/sessions?q=Healthcare")
+        self.assertEqual(title_response.status_code, 200)
+        self.assertEqual(len(title_response.json()["sessions"]), 1)
+
+        content_response = self.client.get("/api/sessions?q=startups")
+        self.assertEqual(content_response.status_code, 200)
+        self.assertEqual(len(content_response.json()["sessions"]), 1)
 
     def test_jobs_endpoint_returns_only_current_user_jobs(self) -> None:
         session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI")
@@ -121,12 +136,39 @@ class SessionApiTests(TestCase):
         retried_status = self._wait_for_document_task(task.id)
         self.assertEqual(retried_status["state"], "completed")
 
+    def test_export_message_as_pdf_and_docx(self) -> None:
+        session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI", research_depth="standard")
+        assistant = ConversationMessage.objects.create(
+            session=session,
+            role="assistant",
+            content="Summary",
+            report_markdown="# Research Report\n\nUseful content",
+            report_payload={"headline": "Healthcare AI Report"},
+        )
+
+        pdf_response = self.client.get(f"/api/messages/{assistant.id}/export?format=pdf")
+        if find_spec("reportlab") is None:
+            self.assertEqual(pdf_response.status_code, 503)
+        else:
+            self.assertEqual(pdf_response.status_code, 200)
+            self.assertEqual(pdf_response["Content-Type"], "application/pdf")
+
+        docx_response = self.client.get(f"/api/messages/{assistant.id}/export?format=docx")
+        if find_spec("docx") is None:
+            self.assertEqual(docx_response.status_code, 503)
+        else:
+            self.assertEqual(docx_response.status_code, 200)
+            self.assertIn(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                docx_response["Content-Type"],
+            )
+
     def _wait_for_document_task(self, task_id: str) -> dict:
         for _ in range(30):
             response = self.client.get(f"/api/documents/tasks/{task_id}")
             self.assertEqual(response.status_code, 200)
             payload = response.json()
-            if payload["state"] in {"completed", "failed"}:
+            if payload["state"] in {"completed", "failed", "canceled"}:
                 return payload
             time.sleep(0.1)
         self.fail("Timed out waiting for document task to finish.")

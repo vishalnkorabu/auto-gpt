@@ -9,11 +9,13 @@ from django.conf import settings
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import User
 from django.db import transaction
-from django.http import HttpRequest, JsonResponse
+from django.db.models import Q
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
 from .document_service import delete_uploaded_file, persist_upload
+from .export_service import export_report_as_docx, export_report_as_pdf
 from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
 from .tasks import run_document_task, run_document_task_sync, run_research_job, run_research_job_sync
 
@@ -82,26 +84,42 @@ def sessions_view(request: HttpRequest) -> JsonResponse:
         return user
 
     if request.method == "GET":
+        query = request.GET.get("q", "").strip()
+        queryset = ConversationSession.objects.filter(owner=user)
+        if query:
+            queryset = queryset.filter(
+                Q(title__icontains=query)
+                | Q(messages__content__icontains=query)
+                | Q(messages__report_markdown__icontains=query)
+            ).distinct()
         sessions = [
             {
                 "id": str(session.id),
                 "title": session.title,
                 "mode": session.mode,
+                "research_depth": session.research_depth,
                 "dry_run": session.dry_run,
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
                 "message_count": session.messages.count(),
                 "reports_count": session.reports.count(),
             }
-            for session in ConversationSession.objects.filter(owner=user)[:50]
+            for session in queryset[:50]
         ]
         return JsonResponse({"sessions": sessions})
 
     payload = _json_body(request)
     title = (payload.get("title") or "New research session").strip()
     mode = payload.get("mode") or "multi"
+    research_depth = (payload.get("research_depth") or "standard").strip().lower()
     dry_run = bool(payload.get("dry_run", False))
-    session = ConversationSession.objects.create(owner=user, title=title, mode=mode, dry_run=dry_run)
+    session = ConversationSession.objects.create(
+        owner=user,
+        title=title,
+        mode=mode,
+        research_depth=research_depth,
+        dry_run=dry_run,
+    )
     return JsonResponse(_serialize_session(session), status=201)
 
 
@@ -123,7 +141,8 @@ def session_detail(request: HttpRequest, session_id: UUID) -> JsonResponse:
         if not title:
             return JsonResponse({"detail": "Title is required."}, status=400)
         session.title = title[:255]
-        session.save(update_fields=["title", "updated_at"])
+        session.research_depth = (payload.get("research_depth") or session.research_depth).strip().lower()
+        session.save(update_fields=["title", "research_depth", "updated_at"])
         return JsonResponse(_serialize_session(session))
 
     if request.method == "DELETE":
@@ -183,11 +202,19 @@ def chat_start(request: HttpRequest) -> JsonResponse:
         return JsonResponse({"detail": "Query must be at least 3 characters."}, status=400)
 
     mode = payload.get("mode") or "multi"
+    research_depth = (payload.get("research_depth") or "standard").strip().lower()
     dry_run = bool(payload.get("dry_run", False))
     session_id = payload.get("session_id")
 
     try:
-        session = _resolve_session(user=user, session_id=session_id, query=query, mode=mode, dry_run=dry_run)
+        session = _resolve_session(
+            user=user,
+            session_id=session_id,
+            query=query,
+            mode=mode,
+            research_depth=research_depth,
+            dry_run=dry_run,
+        )
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=404)
 
@@ -202,6 +229,7 @@ def chat_start(request: HttpRequest) -> JsonResponse:
             user_message=user_message,
             query=query,
             mode=mode,
+            research_depth=research_depth,
             dry_run=dry_run,
             state="queued",
         )
@@ -343,6 +371,7 @@ def document_query(request: HttpRequest) -> JsonResponse:
             "document_ids": document_ids,
             "include_research": include_research,
             "research_mode": payload.get("research_mode") or "multi",
+            "research_depth": (payload.get("research_depth") or "standard").strip().lower(),
             "dry_run": bool(payload.get("dry_run", False)),
         },
     )
@@ -433,19 +462,71 @@ def document_task_retry(request: HttpRequest, task_id: UUID) -> JsonResponse:
     return JsonResponse({"task_id": str(task.id), "state": task.state})
 
 
+@require_GET
+def message_export(request: HttpRequest, message_id: int) -> HttpResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    try:
+        message = ConversationMessage.objects.select_related("session").get(id=message_id, session__owner=user, role="assistant")
+    except ConversationMessage.DoesNotExist:
+        return JsonResponse({"detail": "Message not found."}, status=404)
+
+    format_name = (request.GET.get("format") or "pdf").strip().lower()
+    title = (message.report_payload or {}).get("headline") or f"Research response {message.id}"
+    body = message.report_markdown or message.content
+
+    if format_name == "pdf":
+        try:
+            payload = export_report_as_pdf(title, body)
+        except RuntimeError as exc:
+            return JsonResponse({"detail": str(exc)}, status=503)
+        response = HttpResponse(payload, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="research-response-{message.id}.pdf"'
+        return response
+    if format_name == "docx":
+        try:
+            payload = export_report_as_docx(title, body)
+        except RuntimeError as exc:
+            return JsonResponse({"detail": str(exc)}, status=503)
+        response = HttpResponse(
+            payload,
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        response["Content-Disposition"] = f'attachment; filename="research-response-{message.id}.docx"'
+        return response
+
+    return JsonResponse({"detail": "format must be pdf or docx."}, status=400)
+
+
 def _require_user(request: HttpRequest) -> User | JsonResponse:
     if not request.user.is_authenticated:
         return JsonResponse({"detail": "Authentication required."}, status=401)
     return request.user
 
 
-def _resolve_session(user: User, session_id: str | None, query: str, mode: str, dry_run: bool) -> ConversationSession:
+def _resolve_session(
+    user: User,
+    session_id: str | None,
+    query: str,
+    mode: str,
+    research_depth: str,
+    dry_run: bool,
+) -> ConversationSession:
     if session_id:
-        return _get_session(user, UUID(session_id))
+        session = _get_session(user, UUID(session_id))
+        if session.mode != mode or session.dry_run != dry_run or session.research_depth != research_depth:
+            session.mode = mode
+            session.dry_run = dry_run
+            session.research_depth = research_depth
+            session.save(update_fields=["mode", "dry_run", "research_depth", "updated_at"])
+        return session
     return ConversationSession.objects.create(
         owner=user,
         title=_title_from_query(query),
         mode=mode,
+        research_depth=research_depth,
         dry_run=dry_run,
     )
 
@@ -462,6 +543,7 @@ def _serialize_session(session: ConversationSession) -> dict:
         "id": str(session.id),
         "title": session.title,
         "mode": session.mode,
+        "research_depth": session.research_depth,
         "dry_run": session.dry_run,
         "created_at": session.created_at.isoformat(),
         "updated_at": session.updated_at.isoformat(),
@@ -554,6 +636,7 @@ def _serialize_research_job(job: ResearchJob) -> dict:
         "session_title": job.session.title,
         "query": job.query,
         "mode": job.mode,
+        "research_depth": job.research_depth,
         "dry_run": job.dry_run,
         "state": job.state,
         "error": job.error,

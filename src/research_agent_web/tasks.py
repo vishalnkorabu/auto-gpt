@@ -16,7 +16,7 @@ except ModuleNotFoundError:  # pragma: no cover - allows local dev without Celer
 from django.utils import timezone
 
 from research_agent.agent import ResearchAgent
-from research_agent.config import load_settings
+from research_agent.config import apply_research_depth, load_settings
 from research_agent.presentation import build_presentable_report
 
 from .document_service import answer_document_question, build_hybrid_answer, delete_uploaded_file, process_document
@@ -51,7 +51,10 @@ def run_research_job_sync(job_id: str) -> None:
     ResearchJob.objects.filter(id=parsed_job_id).update(state="running", updated_at=timezone.now())
 
     try:
-        settings = load_settings(require_api_keys=not job.dry_run)
+        settings = apply_research_depth(
+            load_settings(require_api_keys=not job.dry_run),
+            job.research_depth,
+        )
         agent = ResearchAgent(settings)
         run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = Path("reports/api") / run_id
@@ -146,7 +149,10 @@ def run_document_task_sync(task_id: str) -> None:
                 _ensure_task_not_canceled(parsed_task_id)
                 emit("Running live web research.")
                 dry_run = bool(task.payload.get("dry_run", False))
-                settings = load_settings(require_api_keys=not dry_run)
+                settings = apply_research_depth(
+                    load_settings(require_api_keys=not dry_run),
+                    task.payload.get("research_depth") or "standard",
+                )
                 agent = ResearchAgent(settings)
                 run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
                 output_dir = Path("reports/document_hybrid") / run_id

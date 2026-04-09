@@ -1,7 +1,9 @@
 export default function TopBar({
   mode,
+  researchDepth,
   dryRun,
   onModeChange,
+  onResearchDepthChange,
   onDryRunChange,
   onOpenJobs,
   onOpenDocuments,
@@ -18,6 +20,14 @@ export default function TopBar({
           <select value={mode} onChange={(e) => onModeChange(e.target.value)}>
             <option value="multi">multi</option>
             <option value="single">single</option>
+          </select>
+        </label>
+        <label>
+          Depth
+          <select value={researchDepth} onChange={(e) => onResearchDepthChange(e.target.value)}>
+            <option value="quick">quick</option>
+            <option value="standard">standard</option>
+            <option value="deep">deep</option>
           </select>
         </label>
         <label className="checkbox">

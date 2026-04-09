@@ -1,4 +1,4 @@
-export default function AssistantResponse({ payload, onOpenSources }) {
+export default function AssistantResponse({ payload, onOpenSources, onExport }) {
   const { report, report_markdown: reportMarkdown } = payload;
 
   return (
@@ -9,6 +9,16 @@ export default function AssistantResponse({ payload, onOpenSources }) {
           <pre className="response-text">{report?.response_text || payload.text}</pre>
         </div>
         <div className="action-row">
+          {payload?.id ? (
+            <>
+              <button className="secondary-button" onClick={() => onExport(payload.id, "pdf")} type="button">
+                Export PDF
+              </button>
+              <button className="secondary-button" onClick={() => onExport(payload.id, "docx")} type="button">
+                Export DOCX
+              </button>
+            </>
+          ) : null}
           <button className="secondary-button" onClick={onOpenSources} type="button">
             View sources
           </button>

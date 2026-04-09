@@ -15,6 +15,7 @@ urlpatterns = [
     path("sessions/<uuid:session_id>", views.session_detail, name="session-detail"),
     path("sessions/<uuid:session_id>/messages", views.session_messages, name="session-messages"),
     path("sessions/<uuid:session_id>/reports", views.session_reports, name="session-reports"),
+    path("messages/<int:message_id>/export", views.message_export, name="message-export"),
     path("jobs", views.jobs_view, name="jobs"),
     path("documents", views.documents_view, name="documents"),
     path("documents/query", views.document_query, name="document-query"),

@@ -4,6 +4,7 @@ export default function HistorySidebar({
   currentSessionId,
   editingSessionId,
   editingTitle,
+  sessionSearch,
   documentsCount,
   runningJobsCount,
   onStartNewSession,
@@ -11,6 +12,7 @@ export default function HistorySidebar({
   onLoadSession,
   onEditingSessionChange,
   onEditingTitleChange,
+  onSessionSearchChange,
   onRenameSession,
   onDeleteSession,
   onOpenDocuments,
@@ -31,6 +33,12 @@ export default function HistorySidebar({
           </button>
         </div>
       </div>
+      <input
+        className="session-search"
+        value={sessionSearch}
+        onChange={(e) => onSessionSearchChange(e.target.value)}
+        placeholder="Search prior sessions"
+      />
       <div className="session-list">
         {sessions.map((session) => (
           <div key={session.id} className={`session-card ${session.id === currentSessionId ? "active" : ""}`}>

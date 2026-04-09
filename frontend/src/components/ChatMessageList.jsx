@@ -1,7 +1,7 @@
 import AssistantResponse from "./AssistantResponse";
 import LoadingResponse from "./LoadingResponse";
 
-export default function ChatMessageList({ messages, onOpenSources }) {
+export default function ChatMessageList({ messages, onOpenSources, onExport }) {
   return (
     <main className="chat">
       {messages.length === 0 && <p className="placeholder">Ask a research question to start.</p>}
@@ -9,7 +9,11 @@ export default function ChatMessageList({ messages, onOpenSources }) {
         <article key={msg.id || index} className={`bubble ${bubbleClass(msg.role)}`}>
           <div className="role">{labelForRole(msg.role)}</div>
           {msg.role === "assistant" && msg.payload ? (
-            <AssistantResponse payload={msg.payload} onOpenSources={() => onOpenSources(msg.payload.report)} />
+            <AssistantResponse
+              payload={msg.payload}
+              onOpenSources={() => onOpenSources(msg.payload.report)}
+              onExport={onExport}
+            />
           ) : msg.role === "assistant-loading" ? (
             <LoadingResponse query={msg.query} progressMessages={msg.progressMessages} />
           ) : (

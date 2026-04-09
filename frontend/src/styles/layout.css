@@ -99,6 +99,16 @@
   gap: 10px;
 }
 
+.session-search {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
+  margin-bottom: 12px;
+}
+
 .session-card {
   border: 1px solid var(--border);
   border-radius: 14px;

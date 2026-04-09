@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
@@ -18,6 +19,13 @@ class Settings:
     max_web_results: int
     max_paper_results: int
     max_planned_queries: int
+
+
+RESEARCH_DEPTH_PRESETS = {
+    "quick": {"max_web_results": 3, "max_paper_results": 1, "max_planned_queries": 2},
+    "standard": {},
+    "deep": {"max_web_results": 9, "max_paper_results": 6, "max_planned_queries": 6},
+}
 
 
 def load_settings(require_api_keys: bool = True) -> Settings:
@@ -53,3 +61,13 @@ def load_settings(require_api_keys: bool = True) -> Settings:
         max_paper_results=int(os.getenv("MAX_PAPER_RESULTS", "4")),
         max_planned_queries=int(os.getenv("MAX_PLANNED_QUERIES", "4")),
     )
+
+
+def apply_research_depth(settings: Settings, depth: str) -> Settings:
+    normalized = (depth or "standard").strip().lower()
+    overrides = RESEARCH_DEPTH_PRESETS.get(normalized)
+    if overrides is None:
+        raise ValueError("research_depth must be one of: quick, standard, deep.")
+    if not overrides:
+        return settings
+    return replace(settings, **overrides)

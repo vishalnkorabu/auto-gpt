@@ -19,6 +19,7 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState("multi");
+  const [researchDepth, setResearchDepth] = useState("standard");
   const [dryRun, setDryRun] = useState(false);
   const [drawerReport, setDrawerReport] = useState(null);
   const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
@@ -26,6 +27,7 @@ export default function App() {
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingTitle, setEditingTitle] = useState("");
+  const [sessionSearch, setSessionSearch] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [credentials, setCredentials] = useState({ username: "", password: "" });
   const [user, setUser] = useState(null);
@@ -60,6 +62,14 @@ export default function App() {
     }, 3000);
     return () => window.clearInterval(intervalId);
   }, [jobsDrawerOpen, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const timeoutId = window.setTimeout(() => {
+      void loadSessions(sessionSearch);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [sessionSearch, user]);
 
   async function bootstrap() {
     const me = await apiFetch("/api/auth/me");
@@ -123,8 +133,9 @@ export default function App() {
     window.localStorage.removeItem(SESSION_KEY);
   }
 
-  async function loadSessions() {
-    const data = await apiFetch("/api/sessions");
+  async function loadSessions(searchTerm = sessionSearch) {
+    const queryString = searchTerm ? `?q=${encodeURIComponent(searchTerm)}` : "";
+    const data = await apiFetch(`/api/sessions${queryString}`);
     setSessions(data.sessions || []);
   }
 
@@ -143,6 +154,7 @@ export default function App() {
       const data = await apiFetch(`/api/sessions/${sessionId}/messages`);
       setCurrentSessionId(sessionId);
       setMode(data.session.mode);
+      setResearchDepth(data.session.research_depth || "standard");
       setDryRun(data.session.dry_run);
       setMessages(
         (data.messages || []).map((message) =>
@@ -207,6 +219,7 @@ export default function App() {
         body: JSON.stringify({
           query: trimmed,
           mode,
+          research_depth: researchDepth,
           dry_run: dryRun,
           session_id: currentSessionId,
         }),
@@ -320,6 +333,7 @@ export default function App() {
           document_ids: selectedDocumentIds,
           include_research: includeResearch,
           research_mode: mode,
+          research_depth: researchDepth,
           dry_run: dryRun,
         }),
       });
@@ -401,6 +415,10 @@ export default function App() {
     );
   }
 
+  function exportMessage(messageId, format) {
+    window.open(`/api/messages/${messageId}/export?format=${format}`, "_blank", "noopener,noreferrer");
+  }
+
   if (!user) {
     return (
       <AuthScreen
@@ -424,6 +442,7 @@ export default function App() {
         currentSessionId={currentSessionId}
         editingSessionId={editingSessionId}
         editingTitle={editingTitle}
+        sessionSearch={sessionSearch}
         documentsCount={documents.length}
         runningJobsCount={jobs.filter((job) => job.state === "running").length}
         onStartNewSession={startNewSession}
@@ -431,6 +450,7 @@ export default function App() {
         onLoadSession={loadSessionMessages}
         onEditingSessionChange={setEditingSessionId}
         onEditingTitleChange={setEditingTitle}
+        onSessionSearchChange={setSessionSearch}
         onRenameSession={renameSession}
         onDeleteSession={deleteSession}
         onOpenDocuments={() => setDocumentsDrawerOpen(true)}
@@ -439,13 +459,15 @@ export default function App() {
       <div className="main-pane">
         <TopBar
           mode={mode}
+          researchDepth={researchDepth}
           dryRun={dryRun}
           onModeChange={setMode}
+          onResearchDepthChange={setResearchDepth}
           onDryRunChange={setDryRun}
           onOpenJobs={() => setJobsDrawerOpen(true)}
           onOpenDocuments={() => setDocumentsDrawerOpen(true)}
         />
-        <ChatMessageList messages={messages} onOpenSources={setDrawerReport} />
+        <ChatMessageList messages={messages} onOpenSources={setDrawerReport} onExport={exportMessage} />
         <Composer query={query} loading={loading} onQueryChange={setQuery} onSubmit={sendQuery} />
       </div>
 
