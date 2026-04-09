@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 
+import AuthScreen from "./components/AuthScreen";
+import ChatMessageList from "./components/ChatMessageList";
+import Composer from "./components/Composer";
+import DocumentsDrawer from "./components/DocumentsDrawer";
+import HistorySidebar from "./components/HistorySidebar";
+import JobsDrawer from "./components/JobsDrawer";
+import SourcesDrawer from "./components/SourcesDrawer";
+import TopBar from "./components/TopBar";
+
 const SESSION_KEY = "research-agent-session-id";
 
 export default function App() {
@@ -26,9 +35,11 @@ export default function App() {
   const [docError, setDocError] = useState("");
   const [uploadingDocument, setUploadingDocument] = useState(false);
   const [queryingDocuments, setQueryingDocuments] = useState(false);
+  const [includeResearch, setIncludeResearch] = useState(false);
   const [documentProgressMessages, setDocumentProgressMessages] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [jobsFilter, setJobsFilter] = useState("all");
+  const [activeDocumentTask, setActiveDocumentTask] = useState(null);
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
   const documentPollRef = useRef(null);
@@ -52,13 +63,12 @@ export default function App() {
 
   async function bootstrap() {
     const me = await apiFetch("/api/auth/me");
-    if (me.authenticated) {
-      setUser(me.user);
-      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
-      const stored = window.localStorage.getItem(SESSION_KEY);
-      if (stored) {
-        await loadSessionMessages(stored);
-      }
+    if (!me.authenticated) return;
+    setUser(me.user);
+    await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+    const stored = window.localStorage.getItem(SESSION_KEY);
+    if (stored) {
+      await loadSessionMessages(stored);
     }
   }
 
@@ -109,6 +119,7 @@ export default function App() {
     setDocError("");
     setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
+    setActiveDocumentTask(null);
     window.localStorage.removeItem(SESSION_KEY);
   }
 
@@ -141,7 +152,7 @@ export default function App() {
         )
       );
       window.localStorage.setItem(SESSION_KEY, sessionId);
-    } catch (_err) {
+    } catch {
       window.localStorage.removeItem(SESSION_KEY);
       setCurrentSessionId(null);
       setMessages([]);
@@ -155,6 +166,7 @@ export default function App() {
     setDocError("");
     setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
+    setActiveDocumentTask(null);
     window.localStorage.removeItem(SESSION_KEY);
     await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
   }
@@ -223,11 +235,8 @@ export default function App() {
   async function pollJob(jobId, loadingId, immediate = false) {
     try {
       const data = await apiFetch(`/api/chat/status/${jobId}`);
-
       setMessages((prev) =>
-        prev.map((msg) =>
-          msg.id === loadingId ? { ...msg, progressMessages: data.progress_messages || [] } : msg
-        )
+        prev.map((msg) => (msg.id === loadingId ? { ...msg, progressMessages: data.progress_messages || [] } : msg))
       );
 
       if (data.state === "completed") {
@@ -235,9 +244,7 @@ export default function App() {
         pollRef.current = null;
         setMessages((prev) =>
           prev.flatMap((msg) =>
-            msg.id === loadingId
-              ? [{ role: "assistant", payload: data.result, text: data.result.text }]
-              : [msg]
+            msg.id === loadingId ? [{ role: "assistant", payload: data.result, text: data.result.text }] : [msg]
           )
         );
         setLoading(false);
@@ -246,9 +253,7 @@ export default function App() {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
         setMessages((prev) =>
-          prev.flatMap((msg) =>
-            msg.id === loadingId ? [{ role: "assistant", text: `Error: ${data.error}` }] : [msg]
-          )
+          prev.flatMap((msg) => (msg.id === loadingId ? [{ role: "assistant", text: `Error: ${data.error}` }] : [msg]))
         );
         setLoading(false);
         await loadJobs();
@@ -259,9 +264,7 @@ export default function App() {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
       setMessages((prev) =>
-        prev.flatMap((msg) =>
-          msg.id === loadingId ? [{ role: "assistant", text: `Error: ${err.message}` }] : [msg]
-        )
+        prev.flatMap((msg) => (msg.id === loadingId ? [{ role: "assistant", text: `Error: ${err.message}` }] : [msg]))
       );
       setLoading(false);
       await loadJobs();
@@ -284,10 +287,8 @@ export default function App() {
     setDocumentProgressMessages(["Queued document ingestion job."]);
     setUploadingDocument(true);
     try {
-      const data = await apiFetch("/api/documents", {
-        method: "POST",
-        body: formData,
-      });
+      const data = await apiFetch("/api/documents", { method: "POST", body: formData });
+      setActiveDocumentTask({ id: data.task_id, kind: "ingest" });
       documentPollRef.current = window.setInterval(() => {
         void pollDocumentTask(data.task_id, "ingest");
       }, 1200);
@@ -295,6 +296,7 @@ export default function App() {
     } catch (err) {
       setDocError(err.message);
       setDocumentProgressMessages([]);
+      setActiveDocumentTask(null);
     } finally {
       setUploadingDocument(false);
     }
@@ -310,15 +312,18 @@ export default function App() {
     setDocumentProgressMessages(["Queued document query job."]);
     setQueryingDocuments(true);
     try {
-      const payload = {
-        question: trimmed,
-        session_id: currentSessionId,
-        document_ids: selectedDocumentIds,
-      };
       const result = await apiFetch("/api/documents/query", {
         method: "POST",
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          question: trimmed,
+          session_id: currentSessionId,
+          document_ids: selectedDocumentIds,
+          include_research: includeResearch,
+          research_mode: mode,
+          dry_run: dryRun,
+        }),
       });
+      setActiveDocumentTask({ id: result.task_id, kind: "query" });
       documentPollRef.current = window.setInterval(() => {
         void pollDocumentTask(result.task_id, "query");
       }, 1200);
@@ -326,6 +331,7 @@ export default function App() {
     } catch (err) {
       setDocError(err.message);
       setDocumentProgressMessages([]);
+      setActiveDocumentTask(null);
     } finally {
       setQueryingDocuments(false);
     }
@@ -339,20 +345,20 @@ export default function App() {
       if (data.state === "completed") {
         window.clearInterval(documentPollRef.current);
         documentPollRef.current = null;
+        setActiveDocumentTask(null);
         if (kind === "ingest") {
-          if (fileInputRef.current) {
-            fileInputRef.current.value = "";
-          }
+          if (fileInputRef.current) fileInputRef.current.value = "";
           setDocumentProgressMessages(["Document ingestion complete."]);
           await Promise.all([loadDocuments(), loadJobs()]);
         } else {
           setDocAnswer(data.result);
           await loadJobs();
         }
-      } else if (data.state === "failed") {
+      } else if (data.state === "failed" || data.state === "canceled") {
         window.clearInterval(documentPollRef.current);
         documentPollRef.current = null;
-        setDocError(data.error || "Document task failed.");
+        setActiveDocumentTask(null);
+        setDocError(data.error || "Document task did not complete.");
         await Promise.all([loadDocuments(), loadJobs()]);
       } else if (immediate) {
         return;
@@ -360,9 +366,33 @@ export default function App() {
     } catch (err) {
       window.clearInterval(documentPollRef.current);
       documentPollRef.current = null;
+      setActiveDocumentTask(null);
       setDocError(err.message);
       await loadJobs();
     }
+  }
+
+  async function cancelDocumentTask(taskId) {
+    await apiFetch(`/api/documents/tasks/${taskId}/cancel`, { method: "POST", body: "{}" });
+    window.clearInterval(documentPollRef.current);
+    documentPollRef.current = null;
+    setActiveDocumentTask(null);
+    setDocumentProgressMessages(["Task canceled by user."]);
+    await Promise.all([loadJobs(), loadDocuments()]);
+  }
+
+  async function retryDocumentTask(taskId) {
+    setDocError("");
+    setDocumentProgressMessages(["Re-queued document task."]);
+    const data = await apiFetch(`/api/documents/tasks/${taskId}/retry`, { method: "POST", body: "{}" });
+    const matchingJob = jobs.find((job) => job.id === taskId);
+    const kind = matchingJob?.kind === "document-ingest" ? "ingest" : "query";
+    setActiveDocumentTask({ id: data.task_id, kind });
+    documentPollRef.current = window.setInterval(() => {
+      void pollDocumentTask(data.task_id, kind);
+    }, 1200);
+    await pollDocumentTask(data.task_id, kind, true);
+    await loadJobs();
   }
 
   function toggleDocumentSelection(documentId) {
@@ -373,33 +403,14 @@ export default function App() {
 
   if (!user) {
     return (
-      <div className="auth-shell">
-        <form className="auth-card" onSubmit={submitAuth}>
-          <h1>AI Research Agent</h1>
-          <p className="topline">Sign in to keep your research sessions isolated and persistent.</p>
-          <div className="auth-tabs">
-            <button type="button" className={authMode === "login" ? "tab active" : "tab"} onClick={() => setAuthMode("login")}>
-              Login
-            </button>
-            <button type="button" className={authMode === "register" ? "tab active" : "tab"} onClick={() => setAuthMode("register")}>
-              Register
-            </button>
-          </div>
-          <input
-            value={credentials.username}
-            onChange={(e) => setCredentials((prev) => ({ ...prev, username: e.target.value }))}
-            placeholder="Username"
-          />
-          <input
-            type="password"
-            value={credentials.password}
-            onChange={(e) => setCredentials((prev) => ({ ...prev, password: e.target.value }))}
-            placeholder="Password"
-          />
-          {authError ? <div className="auth-error">{authError}</div> : null}
-          <button type="submit">{authMode === "login" ? "Login" : "Create account"}</button>
-        </form>
-      </div>
+      <AuthScreen
+        authMode={authMode}
+        credentials={credentials}
+        authError={authError}
+        onModeChange={setAuthMode}
+        onCredentialsChange={setCredentials}
+        onSubmit={submitAuth}
+      />
     );
   }
 
@@ -407,133 +418,35 @@ export default function App() {
 
   return (
     <div className="app app-layout">
-      <aside className="sidebar">
-        <div className="sidebar-header">
-          <div>
-            <h2>History</h2>
-            <p>{user.username}&apos;s local research sessions.</p>
-          </div>
-          <div className="sidebar-actions">
-            <button className="secondary-button" type="button" onClick={startNewSession}>
-              New chat
-            </button>
-            <button className="secondary-button" type="button" onClick={logoutUser}>
-              Logout
-            </button>
-          </div>
-        </div>
-        <div className="session-list">
-          {sessions.map((session) => (
-            <div key={session.id} className={`session-card ${session.id === currentSessionId ? "active" : ""}`}>
-              <button type="button" className="session-main" onClick={() => loadSessionMessages(session.id)}>
-                {editingSessionId === session.id ? (
-                  <input
-                    className="session-edit"
-                    value={editingTitle}
-                    onChange={(e) => setEditingTitle(e.target.value)}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <div className="session-title">{session.title}</div>
-                )}
-                <div className="session-meta">
-                  {new Date(session.updated_at).toLocaleString()} - {session.reports_count ?? 0} reports
-                </div>
-              </button>
-              <div className="session-actions">
-                {editingSessionId === session.id ? (
-                  <button type="button" className="mini-button" onClick={() => renameSession(session.id)}>
-                    Save
-                  </button>
-                ) : (
-                  <button
-                    type="button"
-                    className="mini-button"
-                    onClick={() => {
-                      setEditingSessionId(session.id);
-                      setEditingTitle(session.title);
-                    }}
-                  >
-                    Rename
-                  </button>
-                )}
-                <button type="button" className="mini-button danger" onClick={() => deleteSession(session.id)}>
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="sidebar-section">
-          <div className="sidebar-section-header">
-            <h3>Document Library</h3>
-            <button className="mini-button" type="button" onClick={() => setDocumentsDrawerOpen(true)}>
-              Open
-            </button>
-          </div>
-          <p className="sidebar-note">Upload docs into the current workspace and query them alongside your research flow.</p>
-          <div className="sidebar-stat-row">
-            <span>{documents.length} documents</span>
-            <span>{jobs.filter((job) => job.state === "running").length} running jobs</span>
-          </div>
-        </div>
-      </aside>
+      <HistorySidebar
+        user={user}
+        sessions={sessions}
+        currentSessionId={currentSessionId}
+        editingSessionId={editingSessionId}
+        editingTitle={editingTitle}
+        documentsCount={documents.length}
+        runningJobsCount={jobs.filter((job) => job.state === "running").length}
+        onStartNewSession={startNewSession}
+        onLogout={logoutUser}
+        onLoadSession={loadSessionMessages}
+        onEditingSessionChange={setEditingSessionId}
+        onEditingTitleChange={setEditingTitle}
+        onRenameSession={renameSession}
+        onDeleteSession={deleteSession}
+        onOpenDocuments={() => setDocumentsDrawerOpen(true)}
+      />
 
       <div className="main-pane">
-        <header className="topbar">
-          <div>
-            <h1>AI Research Agent</h1>
-            <p className="topline">Django + Celery + Redis research chat with user-isolated session history.</p>
-          </div>
-          <div className="controls">
-            <label>
-              Mode
-              <select value={mode} onChange={(e) => setMode(e.target.value)}>
-                <option value="multi">multi</option>
-                <option value="single">single</option>
-              </select>
-            </label>
-            <label className="checkbox">
-              <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)} />
-              Dry run
-            </label>
-            <button className="secondary-button" type="button" onClick={() => setJobsDrawerOpen(true)}>
-              Job status
-            </button>
-            <button className="secondary-button" type="button" onClick={() => setDocumentsDrawerOpen(true)}>
-              Documents
-            </button>
-          </div>
-        </header>
-
-        <main className="chat">
-          {messages.length === 0 && <p className="placeholder">Ask a research question to start.</p>}
-          {messages.map((msg, index) => (
-            <article key={msg.id || index} className={`bubble ${bubbleClass(msg.role)}`}>
-              <div className="role">{labelForRole(msg.role)}</div>
-              {msg.role === "assistant" && msg.payload ? (
-                <AssistantResponse payload={msg.payload} onOpenSources={() => setDrawerReport(msg.payload.report)} />
-              ) : msg.role === "assistant-loading" ? (
-                <LoadingResponse query={msg.query} progressMessages={msg.progressMessages} />
-              ) : (
-                <pre>{msg.text}</pre>
-              )}
-            </article>
-          ))}
-        </main>
-
-        <form className="composer" onSubmit={sendQuery}>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Impact of AI on healthcare startups"
-            disabled={loading}
-          />
-          <button type="submit" disabled={loading || !query.trim()}>
-            Send
-          </button>
-        </form>
+        <TopBar
+          mode={mode}
+          dryRun={dryRun}
+          onModeChange={setMode}
+          onDryRunChange={setDryRun}
+          onOpenJobs={() => setJobsDrawerOpen(true)}
+          onOpenDocuments={() => setDocumentsDrawerOpen(true)}
+        />
+        <ChatMessageList messages={messages} onOpenSources={setDrawerReport} />
+        <Composer query={query} loading={loading} onQueryChange={setQuery} onSubmit={sendQuery} />
       </div>
 
       <SourcesDrawer report={drawerReport} onClose={() => setDrawerReport(null)} />
@@ -544,6 +457,8 @@ export default function App() {
         jobsFilter={jobsFilter}
         onFilterChange={setJobsFilter}
         onRefresh={() => void loadJobs()}
+        onCancel={cancelDocumentTask}
+        onRetry={retryDocumentTask}
       />
       <DocumentsDrawer
         open={documentsDrawerOpen}
@@ -557,306 +472,16 @@ export default function App() {
         docAnswer={docAnswer}
         docError={docError}
         queryingDocuments={queryingDocuments}
+        includeResearch={includeResearch}
+        setIncludeResearch={setIncludeResearch}
         documentProgressMessages={documentProgressMessages}
+        activeDocumentTask={activeDocumentTask}
         selectedDocumentIds={selectedDocumentIds}
         toggleDocumentSelection={toggleDocumentSelection}
         onUpload={uploadDocument}
         onAsk={submitDocumentQuestion}
+        onCancelTask={cancelDocumentTask}
       />
     </div>
   );
-}
-
-function AssistantResponse({ payload, onOpenSources }) {
-  const { report, report_markdown: reportMarkdown } = payload;
-
-  return (
-    <div className="response">
-      <div className="response-header">
-        <div>
-          <h2>{report?.headline || "Research response"}</h2>
-          <pre className="response-text">{report?.response_text || payload.text}</pre>
-        </div>
-        <div className="action-row">
-          <button className="secondary-button" onClick={onOpenSources} type="button">
-            View sources
-          </button>
-        </div>
-      </div>
-      {reportMarkdown ? <div className="meta-line">Structured report saved for this response.</div> : null}
-    </div>
-  );
-}
-
-function LoadingResponse({ query, progressMessages }) {
-  const latest = progressMessages[progressMessages.length - 1] || "Generating response.";
-
-  return (
-    <div className="loading-shell">
-      <div className="loading-stage">
-        <div className="loading-badge">Generating</div>
-        <h2>{query}</h2>
-        <p>{latest}</p>
-      </div>
-      <div className="progress-feed">
-        {progressMessages.slice(-5).map((message, index) => (
-          <div className="progress-item" key={`${message}-${index}`}>
-            <span className="progress-dot" />
-            <span>{message}</span>
-          </div>
-        ))}
-      </div>
-      <div className="loading-bars" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
-    </div>
-  );
-}
-
-function SourcesDrawer({ report, onClose }) {
-  return (
-    <aside className={`drawer ${report ? "open" : ""}`}>
-      <div className="drawer-panel">
-        <div className="drawer-header">
-          <div>
-            <div className="drawer-kicker">Sources</div>
-            <h2>{report?.headline || "Research sources"}</h2>
-          </div>
-          <button className="secondary-button" onClick={onClose} type="button">
-            Close
-          </button>
-        </div>
-        <div className="drawer-content">
-          {report?.sources?.map((source) => (
-            <article className="source-card" key={source.id}>
-              <div className="source-topline">
-                <span className="citation-chip">[{source.id}]</span>
-                <span className="source-type">{source.source_type}</span>
-              </div>
-              <h3>{source.title}</h3>
-              <a href={source.url} target="_blank" rel="noreferrer">
-                {source.url}
-              </a>
-              <div className="source-meta">Credibility {Math.round((source.credibility_score || 0) * 100)}%</div>
-              <p>{source.summary || source.snippet}</p>
-              {!!source.key_points?.length && (
-                <div className="source-points">
-                  {source.key_points.map((point, index) => (
-                    <div key={`${source.id}-${index}`} className="source-point">
-                      {point}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-          ))}
-        </div>
-      </div>
-      {report && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
-    </aside>
-  );
-}
-
-function JobsDrawer({ open, onClose, jobs, jobsFilter, onFilterChange, onRefresh }) {
-  return (
-    <aside className={`drawer ${open ? "open" : ""}`}>
-      <div className="drawer-panel drawer-panel-wide">
-        <div className="drawer-header">
-          <div>
-            <div className="drawer-kicker">Operations</div>
-            <h2>Job status</h2>
-          </div>
-          <div className="action-row">
-            <button className="secondary-button" type="button" onClick={onRefresh}>
-              Refresh
-            </button>
-            <button className="secondary-button" onClick={onClose} type="button">
-              Close
-            </button>
-          </div>
-        </div>
-        <div className="drawer-content">
-          <div className="filter-row">
-            {["all", "queued", "running", "completed", "failed"].map((value) => (
-              <button
-                key={value}
-                type="button"
-                className={`mini-button ${jobsFilter === value ? "active" : ""}`}
-                onClick={() => onFilterChange(value)}
-              >
-                {value}
-              </button>
-            ))}
-          </div>
-          {jobs.length === 0 ? <p className="placeholder">No jobs yet.</p> : null}
-          {jobs.map((job) => (
-            <article className="job-card" key={job.id}>
-              <div className="job-row">
-                <div>
-                  <div className="job-query">{job.query}</div>
-                  <div className="job-meta">
-                    {job.session_title} · {new Date(job.created_at).toLocaleString()}
-                  </div>
-                </div>
-                <span className={`status-pill ${job.state}`}>{job.state}</span>
-              </div>
-              <div className="job-meta">
-                {job.kind === "research" ? `Mode ${job.mode} · ${job.dry_run ? "Dry run" : "Live run"}` : `Type ${job.kind}`}
-              </div>
-              {job.latest_progress ? <div className="job-progress">{job.latest_progress}</div> : null}
-              {job.error ? <div className="job-error">{job.error}</div> : null}
-            </article>
-          ))}
-        </div>
-      </div>
-      {open && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
-    </aside>
-  );
-}
-
-function DocumentsDrawer({
-  open,
-  onClose,
-  documents,
-  currentSessionId,
-  fileInputRef,
-  uploadingDocument,
-  docQuestion,
-  setDocQuestion,
-  docAnswer,
-  docError,
-  queryingDocuments,
-  documentProgressMessages,
-  selectedDocumentIds,
-  toggleDocumentSelection,
-  onUpload,
-  onAsk,
-}) {
-  return (
-    <aside className={`drawer ${open ? "open" : ""}`}>
-      <div className="drawer-panel drawer-panel-wide">
-        <div className="drawer-header">
-          <div>
-            <div className="drawer-kicker">Documents</div>
-            <h2>Upload and query files</h2>
-          </div>
-          <button className="secondary-button" onClick={onClose} type="button">
-            Close
-          </button>
-        </div>
-        <div className="drawer-content">
-          <section className="panel-card">
-            <div className="panel-title-row">
-              <div>
-                <h3>Upload</h3>
-                <p>
-                  {currentSessionId
-                    ? "New uploads will be attached to the active chat session."
-                    : "Uploads will be available across your account until attached to a session."}
-                </p>
-              </div>
-            </div>
-            <form className="upload-form" onSubmit={onUpload}>
-              <input ref={fileInputRef} type="file" accept=".txt,.md,.csv,.json,.pdf,.docx" />
-              <button className="secondary-button" type="submit" disabled={uploadingDocument}>
-                {uploadingDocument ? "Uploading..." : "Upload document"}
-              </button>
-            </form>
-            {!!documentProgressMessages.length && (
-              <div className="progress-feed compact">
-                {documentProgressMessages.slice(-4).map((message, index) => (
-                  <div className="progress-item" key={`${message}-${index}`}>
-                    <span className="progress-dot" />
-                    <span>{message}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </section>
-
-          <section className="panel-card">
-            <div className="panel-title-row">
-              <div>
-                <h3>Ask documents</h3>
-                <p>Select specific files if you want a narrower answer.</p>
-              </div>
-            </div>
-            <form className="doc-query-form" onSubmit={onAsk}>
-              <textarea
-                value={docQuestion}
-                onChange={(event) => setDocQuestion(event.target.value)}
-                placeholder="What does the uploaded material say about adoption risk?"
-              />
-              <button className="secondary-button" type="submit" disabled={queryingDocuments || !docQuestion.trim()}>
-                {queryingDocuments ? "Answering..." : "Query documents"}
-              </button>
-            </form>
-            {docError ? <div className="auth-error">{docError}</div> : null}
-            {docAnswer ? (
-              <article className="doc-answer-card">
-                <div className="drawer-kicker">Answer</div>
-                <pre>{docAnswer.answer}</pre>
-                {!!docAnswer.citations?.length && (
-                  <div className="support-list">
-                    {docAnswer.citations.map((citation) => (
-                      <div className="support-card" key={`${citation.document_id}-${citation.chunk_index}`}>
-                        <div className="support-name">{citation.name}</div>
-                        <div className="source-meta">
-                          {citation.file_type.toUpperCase()} · chunk {citation.chunk_index}
-                        </div>
-                        <p>{citation.excerpt}</p>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </article>
-            ) : null}
-          </section>
-
-          <section className="panel-card">
-            <div className="panel-title-row">
-              <div>
-                <h3>Library</h3>
-                <p>{documents.length} uploaded files.</p>
-              </div>
-            </div>
-            <div className="document-list">
-              {documents.map((document) => (
-                <label className="document-card" key={document.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedDocumentIds.includes(document.id)}
-                    disabled={document.status !== "processed"}
-                    onChange={() => toggleDocumentSelection(document.id)}
-                  />
-                  <div>
-                    <div className="document-name">{document.name}</div>
-                    <div className="document-meta">
-                      {document.file_type.toUpperCase()} · {document.chunk_count} chunks · {document.status}
-                      {document.session_title ? ` · ${document.session_title}` : " · account-wide"}
-                    </div>
-                  </div>
-                </label>
-              ))}
-            </div>
-          </section>
-        </div>
-      </div>
-      {open && <button className="drawer-backdrop" type="button" onClick={onClose} aria-label="Close drawer" />}
-    </aside>
-  );
-}
-
-function bubbleClass(role) {
-  if (role === "assistant-loading") return "assistant loading";
-  if (role === "assistant") return "assistant";
-  return "user";
-}
-
-function labelForRole(role) {
-  if (role === "assistant-loading") return "Agent";
-  if (role === "assistant") return "Agent";
-  return "You";
 }

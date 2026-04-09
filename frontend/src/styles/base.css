@@ -1,0 +1,85 @@
+:root {
+  --bg: #efe7db;
+  --panel: #fffdf8;
+  --panel-strong: #fff8ec;
+  --ink: #1b1916;
+  --muted: #6d665d;
+  --user: #f8ecd1;
+  --agent: #edf4ec;
+  --border: #d6c7af;
+  --accent: #b44f2a;
+  --accent-soft: #f4c49b;
+  --chart: #2d6b57;
+  --shadow: 0 14px 40px rgba(77, 54, 22, 0.12);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "Aptos", "Segoe UI", sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(circle at top left, rgba(244, 196, 155, 0.7), transparent 28%),
+    radial-gradient(circle at bottom right, rgba(123, 168, 143, 0.3), transparent 24%),
+    linear-gradient(135deg, #f7efe2 0%, #efe7db 48%, #e5dccd 100%);
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: "Aptos", "Segoe UI", sans-serif;
+  line-height: 1.55;
+}
+
+.topline {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.placeholder {
+  color: var(--muted);
+  margin: 0;
+}
+
+.secondary-button {
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--ink);
+  padding: 10px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.mini-button {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 999px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.mini-button.danger {
+  color: #9b2c2c;
+}
+
+.mini-button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.auth-error {
+  color: #9b2c2c;
+  font-size: 0.9rem;
+}
+
+.drawer-kicker {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+}

@@ -1,0 +1,11 @@
+@keyframes pulseBar {
+  0%,
+  100% {
+    transform: scaleY(0.8);
+    opacity: 0.55;
+  }
+  50% {
+    transform: scaleY(1.1);
+    opacity: 1;
+  }
+}

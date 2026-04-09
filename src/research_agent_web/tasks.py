@@ -19,7 +19,7 @@ from research_agent.agent import ResearchAgent
 from research_agent.config import load_settings
 from research_agent.presentation import build_presentable_report
 
-from .document_service import process_document, answer_document_question
+from .document_service import answer_document_question, build_hybrid_answer, delete_uploaded_file, process_document
 from .models import (
     ConversationMessage,
     DocumentTask,
@@ -104,14 +104,19 @@ def run_document_task_sync(task_id: str) -> None:
     def emit(message: str) -> None:
         _append_document_progress(parsed_task_id, message)
 
+    if task.state == "canceled":
+        return
+
     DocumentTask.objects.filter(id=parsed_task_id).update(state="running", updated_at=timezone.now(), error="", result=None)
 
     try:
         if task.task_type == "ingest":
             if task.document_id is None:
                 raise ValueError("Document ingest task is missing a document.")
+            _ensure_task_not_canceled(parsed_task_id)
             emit("Reading uploaded file.")
             result = process_document(task.document)
+            _ensure_task_not_canceled(parsed_task_id)
             emit("Chunking complete.")
             DocumentTask.objects.filter(id=parsed_task_id).update(
                 state="completed",
@@ -122,6 +127,7 @@ def run_document_task_sync(task_id: str) -> None:
             return
 
         if task.task_type == "query":
+            _ensure_task_not_canceled(parsed_task_id)
             emit("Selecting relevant document chunks.")
             document_ids = task.payload.get("document_ids") or []
             queryset = UserDocument.objects.prefetch_related("chunks").filter(owner_id=task.owner_id, status="processed")
@@ -132,8 +138,37 @@ def run_document_task_sync(task_id: str) -> None:
             documents = list(queryset[:12])
             if not documents:
                 raise ValueError("No processed documents matched this query.")
+            _ensure_task_not_canceled(parsed_task_id)
             emit("Generating grounded document answer.")
-            result = answer_document_question(task.payload.get("question", ""), documents)
+            question = task.payload.get("question", "")
+            result = answer_document_question(question, documents)
+            if task.payload.get("include_research"):
+                _ensure_task_not_canceled(parsed_task_id)
+                emit("Running live web research.")
+                dry_run = bool(task.payload.get("dry_run", False))
+                settings = load_settings(require_api_keys=not dry_run)
+                agent = ResearchAgent(settings)
+                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                output_dir = Path("reports/document_hybrid") / run_id
+                research_result = agent.run(
+                    query=question,
+                    output_dir=output_dir,
+                    mode=task.payload.get("research_mode", "multi"),
+                    dry_run=dry_run,
+                    progress_callback=emit,
+                )
+                presentable = build_presentable_report(
+                    research_result.markdown,
+                    research_result.sources,
+                    research_result.summaries,
+                )
+                result = build_hybrid_answer(
+                    question=question,
+                    document_result=result,
+                    research_summary=presentable.get("summary") or presentable.get("response_text", ""),
+                    research_sources=presentable.get("sources", []),
+                    settings=settings,
+                )
             emit("Document answer ready.")
             DocumentTask.objects.filter(id=parsed_task_id).update(
                 state="completed",
@@ -144,6 +179,22 @@ def run_document_task_sync(task_id: str) -> None:
             return
 
         raise ValueError(f"Unsupported document task type: {task.task_type}")
+    except TaskCanceledError:
+        task = DocumentTask.objects.select_related("document").get(id=parsed_task_id)
+        if task.document_id and task.task_type == "ingest":
+            if task.document.storage_path:
+                delete_uploaded_file(task.document.storage_path)
+            UserDocument.objects.filter(id=task.document_id).update(
+                status="failed",
+                storage_path="",
+                updated_at=timezone.now(),
+            )
+        DocumentTask.objects.filter(id=parsed_task_id).update(
+            state="canceled",
+            error="Task canceled by user.",
+            updated_at=timezone.now(),
+        )
+        return
     except Exception as exc:
         if task.document_id and task.task_type == "ingest":
             UserDocument.objects.filter(id=task.document_id).update(status="failed", updated_at=timezone.now())
@@ -179,3 +230,13 @@ def _build_brief(report_markdown: str) -> str:
         if "Executive Summary" in line and i + 1 < len(lines):
             return lines[i + 1]
     return lines[0]
+
+
+class TaskCanceledError(Exception):
+    pass
+
+
+def _ensure_task_not_canceled(task_id: UUID) -> None:
+    state = DocumentTask.objects.filter(id=task_id).values_list("state", flat=True).first()
+    if state == "canceled":
+        raise TaskCanceledError()

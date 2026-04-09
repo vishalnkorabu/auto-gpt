@@ -74,11 +74,12 @@ class SessionApiTests(TestCase):
         self.assertEqual(upload_status["state"], "completed")
 
         self.assertEqual(UserDocument.objects.count(), 1)
+        self.assertEqual(UserDocument.objects.first().storage_path, "")
         self.assertEqual(DocumentTask.objects.filter(task_type="ingest").count(), 1)
 
         query_response = self.client.post(
             "/api/documents/query",
-            data='{"question":"How are startups using AI in healthcare?"}',
+            data='{"question":"How are startups using AI in healthcare?","include_research":true,"dry_run":true}',
             content_type="application/json",
         )
         self.assertEqual(query_response.status_code, 202)
@@ -89,6 +90,36 @@ class SessionApiTests(TestCase):
         payload = query_status["result"]
         self.assertIn("answer", payload)
         self.assertGreaterEqual(len(payload["citations"]), 1)
+        self.assertEqual(payload["mode"], "hybrid")
+        self.assertGreaterEqual(len(payload["research_sources"]), 1)
+
+    def test_cancel_and_retry_document_query_task(self) -> None:
+        upload = SimpleUploadedFile(
+            "healthcare-note.txt",
+            b"Healthcare startups use AI for triage, coding support, and administrative workflow reduction.",
+            content_type="text/plain",
+        )
+        upload_response = self.client.post("/api/documents", data={"file": upload})
+        upload_task_id = upload_response.json()["task_id"]
+        self._wait_for_document_task(upload_task_id)
+
+        document = UserDocument.objects.first()
+        task = DocumentTask.objects.create(
+            owner=self.user,
+            document=document,
+            task_type="query",
+            title="How is AI being used?",
+            state="queued",
+            payload={"question": "How is AI being used?", "dry_run": True},
+        )
+
+        cancel_response = self.client.post(f"/api/documents/tasks/{task.id}/cancel", data="{}", content_type="application/json")
+        self.assertEqual(cancel_response.status_code, 200)
+
+        retry_response = self.client.post(f"/api/documents/tasks/{task.id}/retry", data="{}", content_type="application/json")
+        self.assertEqual(retry_response.status_code, 200)
+        retried_status = self._wait_for_document_task(task.id)
+        self.assertEqual(retried_status["state"], "completed")
 
     def _wait_for_document_task(self, task_id: str) -> dict:
         for _ in range(30):

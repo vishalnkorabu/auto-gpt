@@ -6,7 +6,7 @@ import uuid
 from collections import Counter
 from pathlib import Path
 
-from research_agent.config import load_settings
+from research_agent.config import Settings, load_settings
 from research_agent.llm import LLMClient
 
 from .models import DocumentChunk, UserDocument
@@ -55,7 +55,9 @@ def process_document(document: UserDocument) -> dict:
     document.file_type = file_type
     document.content = text
     document.status = "processed"
-    document.save(update_fields=["file_type", "content", "status", "updated_at"])
+    delete_uploaded_file(document.storage_path)
+    document.storage_path = ""
+    document.save(update_fields=["file_type", "content", "status", "storage_path", "updated_at"])
     return {"document_id": str(document.id), "chunk_count": len(chunks), "name": document.name}
 
 
@@ -156,6 +158,59 @@ def answer_document_question(question: str, documents: list[UserDocument]) -> di
     return {"answer": answer, "citations": citations}
 
 
+def build_hybrid_answer(
+    question: str,
+    document_result: dict,
+    research_summary: str,
+    research_sources: list[dict],
+    settings: Settings | None = None,
+) -> dict:
+    fallback = _build_hybrid_fallback(question, document_result, research_summary)
+    if settings is None:
+        try:
+            settings = load_settings(require_api_keys=True)
+        except Exception:
+            settings = None
+
+    if settings is None:
+        return {
+            "answer": fallback,
+            "citations": document_result.get("citations", []),
+            "research_sources": research_sources,
+            "mode": "hybrid",
+        }
+
+    try:
+        client = LLMClient(
+            api_key=settings.llm_api_key,
+            model=settings.llm_model,
+            base_url=settings.llm_base_url,
+        )
+        prompt = (
+            "Create one integrated answer using both uploaded-document evidence and live web research.\n"
+            "Keep the answer concise but specific. Do not include inline citation markers.\n\n"
+            f"Question: {question}\n\n"
+            "Document-grounded answer:\n"
+            f"{document_result.get('answer', '')}\n\n"
+            "Web research summary:\n"
+            f"{research_summary}\n"
+        )
+        answer = client.generate(
+            prompt,
+            temperature=0.15,
+            system_prompt="You merge internal document evidence with external web research into one grounded answer.",
+        )
+    except Exception:
+        answer = fallback
+
+    return {
+        "answer": answer or fallback,
+        "citations": document_result.get("citations", []),
+        "research_sources": research_sources,
+        "mode": "hybrid",
+    }
+
+
 def rank_chunks(question: str, documents: list[UserDocument]) -> list[dict]:
     query_terms = Counter(_tokenize(question))
     if not query_terms:
@@ -234,6 +289,14 @@ def _build_fallback_answer(question: str, prompt_context: list[str]) -> str:
 
     joined = " ".join(snippets)
     return f"Based on the uploaded documents, the strongest relevant passages indicate: {joined}"
+
+
+def _build_hybrid_fallback(question: str, document_result: dict, research_summary: str) -> str:
+    document_answer = document_result.get("answer", "").strip()
+    pieces = [f"For '{question}', the uploaded documents suggest: {document_answer}"] if document_answer else []
+    if research_summary.strip():
+        pieces.append(f"Live web research adds: {research_summary.strip()}")
+    return "\n\n".join(pieces).strip() or "I could not build a strong hybrid answer from the available inputs."
 
 
 def _tokenize(text: str) -> list[str]:

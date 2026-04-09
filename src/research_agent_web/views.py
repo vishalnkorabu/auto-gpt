@@ -13,7 +13,7 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
-from .document_service import persist_upload
+from .document_service import delete_uploaded_file, persist_upload
 from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
 from .tasks import run_document_task, run_document_task_sync, run_research_job, run_research_job_sync
 
@@ -317,6 +317,7 @@ def document_query(request: HttpRequest) -> JsonResponse:
 
     session_id = payload.get("session_id")
     document_ids = payload.get("document_ids") or []
+    include_research = bool(payload.get("include_research", False))
     session = None
     if session_id:
         try:
@@ -337,7 +338,13 @@ def document_query(request: HttpRequest) -> JsonResponse:
         session=session,
         task_type="query",
         title=question[:255],
-        payload={"question": question, "document_ids": document_ids},
+        payload={
+            "question": question,
+            "document_ids": document_ids,
+            "include_research": include_research,
+            "research_mode": payload.get("research_mode") or "multi",
+            "dry_run": bool(payload.get("dry_run", False)),
+        },
     )
     _dispatch_document_task(str(task.id))
     return JsonResponse({"task_id": str(task.id)}, status=202)
@@ -366,6 +373,64 @@ def document_task_status(request: HttpRequest, task_id: UUID) -> JsonResponse:
             "error": task.error or None,
         }
     )
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def document_task_cancel(request: HttpRequest, task_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    try:
+        task = DocumentTask.objects.select_related("document").get(id=task_id, owner=user)
+    except DocumentTask.DoesNotExist:
+        return JsonResponse({"detail": "Task not found."}, status=404)
+
+    if task.state not in {"queued", "running"}:
+        return JsonResponse({"detail": "Only queued or running tasks can be canceled."}, status=400)
+
+    if task.task_type == "ingest" and task.document_id and task.document.storage_path:
+        delete_uploaded_file(task.document.storage_path)
+        task.document.storage_path = ""
+        task.document.status = "failed"
+        task.document.save(update_fields=["storage_path", "status", "updated_at"])
+
+    task.state = "canceled"
+    task.error = "Task canceled by user."
+    task.save(update_fields=["state", "error", "updated_at"])
+    return JsonResponse({"task_id": str(task.id), "state": task.state})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def document_task_retry(request: HttpRequest, task_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    try:
+        task = DocumentTask.objects.select_related("document", "session").get(id=task_id, owner=user)
+    except DocumentTask.DoesNotExist:
+        return JsonResponse({"detail": "Task not found."}, status=404)
+
+    if task.state not in {"failed", "canceled"}:
+        return JsonResponse({"detail": "Only failed or canceled tasks can be retried."}, status=400)
+
+    if task.task_type == "ingest" and (task.document is None or not task.document.storage_path):
+        return JsonResponse({"detail": "This ingest task cannot be retried because the raw upload is no longer available."}, status=400)
+
+    task.progress_events.all().delete()
+    task.state = "queued"
+    task.error = ""
+    task.result = None
+    task.completed_at = None
+    task.save(update_fields=["state", "error", "result", "completed_at", "updated_at"])
+    if task.document_id and task.task_type == "ingest":
+        task.document.status = "processing"
+        task.document.save(update_fields=["status", "updated_at"])
+    _dispatch_document_task(str(task.id))
+    return JsonResponse({"task_id": str(task.id), "state": task.state})
 
 
 def _require_user(request: HttpRequest) -> User | JsonResponse:

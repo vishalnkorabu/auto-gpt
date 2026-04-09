@@ -16,6 +16,7 @@ Autonomous AI Research Agent that gathers information, analyzes sources, and gen
 - Supports document upload and grounded document Q&A inside the same app
 - Includes a UI job-status panel for queued/running/completed work
 - Queues document ingestion and document query work through the same Celery/local job runner used for research
+- Deletes raw uploaded files after successful ingestion so only extracted text/chunks remain in the app
 
 ## Tech Stack
 
@@ -177,6 +178,8 @@ The output directory will include:
 - Low-quality/gated sources (for example LinkedIn sign-in pages) are filtered before report generation.
 - Uploaded `.txt`, `.md`, `.csv`, `.json`, `.pdf`, and `.docx` files can be queried from the Documents drawer.
 - Large document uploads and document Q&A now run as background jobs instead of blocking the request.
+- Document tasks can be canceled or retried from the UI job panel.
+- Document Q&A can optionally blend uploaded-document evidence with live web research in one hybrid answer.
 - Django admin is available if you create a superuser: `python manage.py createsuperuser`
 - Basic session/report/API tests are available via `python manage.py test`
 - Jobs are now intended to run via Celery/Redis instead of in-process threads

@@ -1,0 +1,265 @@
+.source-card h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.source-topline,
+.drawer-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: start;
+}
+
+.source-type {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--accent-soft);
+  color: #6e2b14;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.source-card a {
+  color: var(--accent);
+  display: inline-block;
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+
+.source-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+
+.source-card p {
+  margin: 0 0 12px;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.source-points {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.source-point {
+  border-left: 3px solid var(--accent);
+  padding-left: 10px;
+  font-size: 0.92rem;
+}
+
+.drawer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+.drawer.open {
+  pointer-events: auto;
+}
+
+.drawer-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(480px, 100%);
+  background: #fffaf1;
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  transform: translateX(100%);
+  transition: transform 180ms ease;
+  display: grid;
+  grid-template-rows: auto 1fr;
+}
+
+.drawer-panel-wide {
+  width: min(640px, 100%);
+}
+
+.drawer.open .drawer-panel {
+  transform: translateX(0);
+  z-index: 1;
+}
+
+.drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(25, 18, 12, 0.28);
+}
+
+.drawer-header {
+  padding: 16px;
+  background: #fff3dd;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-header h2 {
+  margin: 4px 0 0;
+  font-size: 1.1rem;
+}
+
+.drawer-content {
+  overflow: auto;
+  padding: 0 16px 16px;
+  display: grid;
+  gap: 12px;
+}
+
+.panel-card {
+  display: grid;
+  gap: 12px;
+}
+
+.job-card {
+  display: grid;
+  gap: 10px;
+}
+
+.job-query,
+.support-name,
+.document-name {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.job-meta,
+.document-meta {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.job-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.job-progress {
+  color: var(--ink);
+  line-height: 1.5;
+}
+
+.job-error {
+  color: #9b2c2c;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.status-pill {
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: capitalize;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.status-pill.queued {
+  background: #fff2db;
+}
+
+.status-pill.running {
+  background: #edf4ec;
+  color: #235844;
+}
+
+.status-pill.completed {
+  background: #e5f3ea;
+  color: #235844;
+}
+
+.status-pill.failed {
+  background: #fde9e6;
+  color: #9b2c2c;
+}
+
+.status-pill.canceled {
+  background: #ece7de;
+  color: #6d665d;
+}
+
+.upload-form,
+.doc-query-form {
+  display: grid;
+  gap: 12px;
+}
+
+.doc-query-form textarea {
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  font: inherit;
+  background: #fff;
+}
+
+.doc-checkbox {
+  justify-content: flex-start;
+}
+
+.document-list,
+.support-list {
+  display: grid;
+  gap: 10px;
+}
+
+.document-card {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.document-card:has(input:disabled) {
+  opacity: 0.78;
+}
+
+.document-card input {
+  margin-top: 3px;
+}
+
+.doc-answer-card pre,
+.support-card p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: "Aptos", "Segoe UI", sans-serif;
+  line-height: 1.6;
+}
+
+.support-card {
+  border-left: 3px solid var(--accent);
+  padding-left: 12px;
+}
+
+.research-support {
+  display: grid;
+  gap: 10px;
+}
+
+.source-link-chip {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgba(180, 79, 42, 0.12);
+  color: var(--accent);
+  text-decoration: none;
+}

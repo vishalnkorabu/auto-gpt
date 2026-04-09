@@ -19,6 +19,8 @@ urlpatterns = [
     path("documents", views.documents_view, name="documents"),
     path("documents/query", views.document_query, name="document-query"),
     path("documents/tasks/<uuid:task_id>", views.document_task_status, name="document-task-status"),
+    path("documents/tasks/<uuid:task_id>/cancel", views.document_task_cancel, name="document-task-cancel"),
+    path("documents/tasks/<uuid:task_id>/retry", views.document_task_retry, name="document-task-retry"),
     path("chat/start", views.chat_start, name="chat-start"),
     path("chat/status/<uuid:job_id>", views.chat_status, name="chat-status"),
 ]
