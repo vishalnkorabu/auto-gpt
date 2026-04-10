@@ -127,6 +127,31 @@
   gap: 10px;
 }
 
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 12px;
+}
+
+.metric-card strong {
+  font-size: 1.05rem;
+}
+
+.metric-card span {
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
 .job-query,
 .support-name,
 .document-name {
@@ -262,4 +287,10 @@
   background: rgba(180, 79, 42, 0.12);
   color: var(--accent);
   text-decoration: none;
+}
+
+@media (max-width: 900px) {
+  .ops-grid {
+    grid-template-columns: 1fr;
+  }
 }

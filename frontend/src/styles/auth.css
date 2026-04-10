@@ -28,6 +28,10 @@
   font: inherit;
 }
 
+.auth-card input[type="email"] {
+  width: 100%;
+}
+
 .auth-card button[type="submit"] {
   border: 1px solid var(--ink);
   border-radius: 12px;
@@ -54,4 +58,12 @@
 .tab.active {
   background: var(--accent-soft);
   border-color: var(--accent);
+}
+
+.success-banner {
+  border: 1px solid rgba(35, 88, 68, 0.2);
+  border-radius: 12px;
+  background: #e5f3ea;
+  color: #235844;
+  padding: 12px;
 }

@@ -144,12 +144,18 @@ class ResearchAgent:
                 api_key=self.settings.llm_api_key,
                 model=self.settings.llm_model,
                 base_url=self.settings.llm_base_url,
+                provider=self.settings.llm_provider,
+                input_cost_per_million=self.settings.llm_input_cost_per_million,
+                output_cost_per_million=self.settings.llm_output_cost_per_million,
             )
         if self.report_generator is None:
             self.report_generator = ReportGenerator(
                 api_key=self.settings.llm_api_key,
                 model=self.settings.llm_model,
                 base_url=self.settings.llm_base_url,
+                provider=self.settings.llm_provider,
+                input_cost_per_million=self.settings.llm_input_cost_per_million,
+                output_cost_per_million=self.settings.llm_output_cost_per_million,
             )
         if self.indexer is None:
             self.indexer = SourceIndexer(self.settings.embedding_model)

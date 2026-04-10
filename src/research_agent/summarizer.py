@@ -7,8 +7,23 @@ from .models import SourceDocument, SourceSummary
 
 
 class LLMSummarizer:
-    def __init__(self, api_key: str, model: str, base_url: str | None = None) -> None:
-        self.client = LLMClient(api_key=api_key, model=model, base_url=base_url)
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        base_url: str | None = None,
+        provider: str = "openai",
+        input_cost_per_million: float = 0.0,
+        output_cost_per_million: float = 0.0,
+    ) -> None:
+        self.client = LLMClient(
+            api_key=api_key,
+            model=model,
+            base_url=base_url,
+            provider=provider,
+            input_cost_per_million=input_cost_per_million,
+            output_cost_per_million=output_cost_per_million,
+        )
 
     def summarize_source(self, source_id: int, doc: SourceDocument) -> SourceSummary:
         prompt = (

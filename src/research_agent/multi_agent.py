@@ -8,6 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import Settings
 from .llm import LLMClient
 from .models import ProgressCallback, SourceDocument, SourceSummary
+from .observability import llm_operation
 from .quality import filter_high_quality_sources
 from .report_generator import ReportGenerator
 from .search import SemanticScholarSearchProvider, WebSearchProvider
@@ -42,6 +43,9 @@ class MultiAgentOrchestrator:
             api_key=settings.llm_api_key,
             model=settings.llm_model,
             base_url=settings.llm_base_url,
+            provider=settings.llm_provider,
+            input_cost_per_million=settings.llm_input_cost_per_million,
+            output_cost_per_million=settings.llm_output_cost_per_million,
         )
         self.progress_callback: ProgressCallback | None = None
 
@@ -82,7 +86,8 @@ class MultiAgentOrchestrator:
             f"Max queries: {self.settings.max_planned_queries}\n"
             f"Topic: {state['topic']}"
         )
-        text = self.client.generate(prompt=prompt, temperature=0.1)
+        with llm_operation("planner"):
+            text = self.client.generate(prompt=prompt, temperature=0.1)
         parsed = _safe_parse_json(text)
 
         plan = ""
@@ -136,7 +141,8 @@ class MultiAgentOrchestrator:
 
     def _analyst_node(self, state: AgentState) -> AgentState:
         self._emit("Summarizing the collected evidence.")
-        summaries = [self.summarizer.summarize_source(i + 1, doc) for i, doc in enumerate(state["sources"])]
+        with llm_operation("summarization"):
+            summaries = [self.summarizer.summarize_source(i + 1, doc) for i, doc in enumerate(state["sources"])]
 
         synthesis_prompt = (
             "Synthesize the core findings into concise bullets for a research analyst handoff.\n"
@@ -145,20 +151,22 @@ class MultiAgentOrchestrator:
             "Source summaries:\n"
             + "\n\n".join([f"[{s.source_id}] {s.title}\n{s.summary}" for s in summaries])
         )
-        synthesis = self.client.generate(prompt=synthesis_prompt, temperature=0.2)
+        with llm_operation("analysis"):
+            synthesis = self.client.generate(prompt=synthesis_prompt, temperature=0.2)
         self._emit("Connecting the evidence into a coherent review.")
 
         return {**state, "summaries": summaries, "analysis": synthesis}
 
     def _writer_node(self, state: AgentState) -> AgentState:
         self._emit("Generating the final response.")
-        report_md = self.report_generator.generate(
-            topic=state["topic"],
-            summaries=state["summaries"],
-            sources=state["sources"],
-            plan=state["plan"],
-            analysis=state["analysis"],
-        )
+        with llm_operation("report_generation"):
+            report_md = self.report_generator.generate(
+                topic=state["topic"],
+                summaries=state["summaries"],
+                sources=state["sources"],
+                plan=state["plan"],
+                analysis=state["analysis"],
+            )
         self._emit("Packaging charts, sections, and citations.")
         return {**state, "report_markdown": report_md}
 

@@ -9,6 +9,7 @@ export default function HistorySidebar({
   runningJobsCount,
   onStartNewSession,
   onLogout,
+  onOpenProfile,
   onLoadSession,
   onEditingSessionChange,
   onEditingTitleChange,
@@ -27,6 +28,9 @@ export default function HistorySidebar({
         <div className="sidebar-actions">
           <button className="secondary-button" type="button" onClick={onStartNewSession}>
             New chat
+          </button>
+          <button className="secondary-button" type="button" onClick={onOpenProfile}>
+            Account
           </button>
           <button className="secondary-button" type="button" onClick={onLogout}>
             Logout

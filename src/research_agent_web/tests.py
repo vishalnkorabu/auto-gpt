@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from importlib.util import find_spec
 
 from django.contrib.auth.models import User
@@ -10,13 +11,69 @@ from django.test import Client, TestCase
 from research_agent.models import SourceDocument, SourceSummary
 from research_agent.presentation import build_presentable_report
 
-from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
+from .models import (
+    ApiRequestLog,
+    ConversationMessage,
+    ConversationSession,
+    DocumentTask,
+    LLMUsageEvent,
+    ResearchJob,
+    UserDocument,
+    UserProfile,
+)
+
+
+class AuthApiTests(TestCase):
+    def setUp(self) -> None:
+        self.client = Client()
+
+    def test_register_login_profile_and_password_change(self) -> None:
+        register_response = self.client.post(
+            "/api/auth/register",
+            data='{"username":"tester","password":"secret123","email":"tester@example.com","display_name":"Test User"}',
+            content_type="application/json",
+        )
+        self.assertEqual(register_response.status_code, 201)
+        self.assertEqual(register_response.json()["user"]["display_name"], "Test User")
+
+        me_response = self.client.get("/api/auth/me")
+        self.assertEqual(me_response.status_code, 200)
+        self.assertTrue(me_response.json()["authenticated"])
+        self.assertEqual(me_response.json()["user"]["email"], "tester@example.com")
+
+        profile_response = self.client.patch(
+            "/api/auth/profile",
+            data='{"email":"updated@example.com","display_name":"Updated Name"}',
+            content_type="application/json",
+        )
+        self.assertEqual(profile_response.status_code, 200)
+        self.assertEqual(profile_response.json()["user"]["display_name"], "Updated Name")
+
+        password_response = self.client.post(
+            "/api/auth/password",
+            data='{"current_password":"secret123","new_password":"newsecret123"}',
+            content_type="application/json",
+        )
+        self.assertEqual(password_response.status_code, 200)
+
+        self.client.post("/api/auth/logout", data="{}", content_type="application/json")
+        login_response = self.client.post(
+            "/api/auth/login",
+            data='{"username":"tester","password":"newsecret123"}',
+            content_type="application/json",
+        )
+        self.assertEqual(login_response.status_code, 200)
+        self.assertEqual(UserProfile.objects.get(user__username="tester").display_name, "Updated Name")
+
+    def test_profile_requires_authentication(self) -> None:
+        response = self.client.patch("/api/auth/profile", data="{}", content_type="application/json")
+        self.assertEqual(response.status_code, 401)
 
 
 class SessionApiTests(TestCase):
     def setUp(self) -> None:
         self.client = Client()
-        self.user = User.objects.create_user(username="tester", password="secret123")
+        self.user = User.objects.create_user(username="tester", password="secret123", email="tester@example.com")
         self.client.login(username="tester", password="secret123")
 
     def test_create_rename_and_delete_session(self) -> None:
@@ -87,6 +144,7 @@ class SessionApiTests(TestCase):
         upload_task_id = upload_response.json()["task_id"]
         upload_status = self._wait_for_document_task(upload_task_id)
         self.assertEqual(upload_status["state"], "completed")
+        self.assertEqual(upload_status["queue_backend"], "sync")
 
         self.assertEqual(UserDocument.objects.count(), 1)
         self.assertEqual(UserDocument.objects.first().storage_path, "")
@@ -136,6 +194,39 @@ class SessionApiTests(TestCase):
         retried_status = self._wait_for_document_task(task.id)
         self.assertEqual(retried_status["state"], "completed")
 
+    def test_observability_endpoint_returns_request_and_usage_metrics(self) -> None:
+        session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI")
+        user_message = ConversationMessage.objects.create(session=session, role="user", content="Question")
+        job = ResearchJob.objects.create(
+            session=session,
+            user_message=user_message,
+            query="Question",
+            state="completed",
+            queue_backend="celery",
+            celery_task_id="celery-123",
+        )
+        LLMUsageEvent.objects.create(
+            research_job=job,
+            provider="groq",
+            model="llama-test",
+            operation="planner",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            estimated_cost_usd=Decimal("0.012500"),
+            success=True,
+        )
+        self.client.get("/api/jobs")
+
+        response = self.client.get("/api/observability")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["queue"]["mode"], "thread")
+        self.assertEqual(payload["usage"]["total_tokens"], 150)
+        self.assertGreaterEqual(payload["requests"]["total"], 1)
+        self.assertTrue(any(item["path"] == "/api/jobs" for item in payload["requests"]["top_paths"]))
+
     def test_export_message_as_pdf_and_docx(self) -> None:
         session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI", research_depth="standard")
         assistant = ConversationMessage.objects.create(
@@ -162,6 +253,14 @@ class SessionApiTests(TestCase):
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 docx_response["Content-Type"],
             )
+
+    def test_request_logging_captures_api_calls(self) -> None:
+        self.client.get("/api/jobs")
+        latest_log = ApiRequestLog.objects.order_by("-created_at").first()
+        self.assertIsNotNone(latest_log)
+        assert latest_log is not None
+        self.assertEqual(latest_log.path, "/api/jobs")
+        self.assertEqual(latest_log.method, "GET")
 
     def _wait_for_document_task(self, task_id: str) -> dict:
         for _ in range(30):

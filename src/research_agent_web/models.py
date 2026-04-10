@@ -6,6 +6,16 @@ from django.contrib.auth.models import User
 from django.db import models
 
 
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="profile")
+    display_name = models.CharField(max_length=120, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["user__username"]
+
+
 class ConversationSession(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.CASCADE, related_name="research_sessions")
@@ -66,8 +76,11 @@ class ResearchJob(models.Model):
     research_depth = models.CharField(max_length=16, default="standard")
     dry_run = models.BooleanField(default=False)
     state = models.CharField(max_length=16, choices=STATE_CHOICES, default="queued")
+    queue_backend = models.CharField(max_length=16, default="thread")
+    celery_task_id = models.CharField(max_length=255, blank=True, default="")
     output_dir = models.CharField(max_length=500, blank=True, default="")
     error = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -167,9 +180,12 @@ class DocumentTask(models.Model):
     task_type = models.CharField(max_length=16, choices=TASK_CHOICES)
     title = models.CharField(max_length=255)
     state = models.CharField(max_length=16, choices=STATE_CHOICES, default="queued")
+    queue_backend = models.CharField(max_length=16, default="thread")
+    celery_task_id = models.CharField(max_length=255, blank=True, default="")
     payload = models.JSONField(default=dict, blank=True)
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(blank=True, default="")
+    started_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -200,3 +216,47 @@ class DocumentTaskProgressEvent(models.Model):
     class Meta:
         ordering = ["sequence", "id"]
         unique_together = ("task", "sequence")
+
+
+class LLMUsageEvent(models.Model):
+    research_job = models.ForeignKey(
+        ResearchJob,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="usage_events",
+    )
+    document_task = models.ForeignKey(
+        DocumentTask,
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+        related_name="usage_events",
+    )
+    provider = models.CharField(max_length=32)
+    model = models.CharField(max_length=120)
+    operation = models.CharField(max_length=64, default="llm.generate")
+    duration_ms = models.PositiveIntegerField(default=0)
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    estimated_cost_usd = models.DecimalField(max_digits=12, decimal_places=6, default=0)
+    success = models.BooleanField(default=True)
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+
+
+class ApiRequestLog(models.Model):
+    user = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL, related_name="api_request_logs")
+    method = models.CharField(max_length=16)
+    path = models.CharField(max_length=255)
+    status_code = models.PositiveSmallIntegerField()
+    duration_ms = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]

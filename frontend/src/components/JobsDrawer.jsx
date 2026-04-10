@@ -2,6 +2,7 @@ export default function JobsDrawer({
   open,
   onClose,
   jobs,
+  observability,
   jobsFilter,
   onFilterChange,
   onRefresh,
@@ -26,6 +27,46 @@ export default function JobsDrawer({
           </div>
         </div>
         <div className="drawer-content">
+          {observability ? (
+            <section className="panel-card ops-grid">
+              <article className="metric-card">
+                <div className="drawer-kicker">Queue</div>
+                <strong>{observability.queue?.mode || "thread"}</strong>
+                <span>{observability.research_jobs?.running || 0} research jobs running</span>
+              </article>
+              <article className="metric-card">
+                <div className="drawer-kicker">Requests</div>
+                <strong>{observability.requests?.total || 0}</strong>
+                <span>{observability.requests?.errors || 0} API errors in 7 days</span>
+              </article>
+              <article className="metric-card">
+                <div className="drawer-kicker">Usage</div>
+                <strong>{observability.usage?.total_tokens || 0} tokens</strong>
+                <span>${(observability.usage?.estimated_cost_usd || 0).toFixed(4)} estimated cost</span>
+              </article>
+            </section>
+          ) : null}
+          {observability?.recent_errors?.length ? (
+            <section className="panel-card">
+              <div className="panel-title-row">
+                <div>
+                  <h3>Recent errors</h3>
+                  <p>Latest API and LLM failures captured by the app.</p>
+                </div>
+              </div>
+              <div className="document-list">
+                {observability.recent_errors.map((item, index) => (
+                  <article className="job-card" key={`${item.kind}-${item.created_at}-${index}`}>
+                    <div className="job-row">
+                      <div className="job-query">{item.path}</div>
+                      <span className="status-pill failed">{item.kind}</span>
+                    </div>
+                    <div className="job-error">{item.message}</div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
           <div className="filter-row">
             {["all", "queued", "running", "completed", "failed", "canceled"].map((value) => (
               <button

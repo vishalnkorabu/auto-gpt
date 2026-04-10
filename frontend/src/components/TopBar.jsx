@@ -1,4 +1,6 @@
 export default function TopBar({
+  user,
+  observability,
   mode,
   researchDepth,
   dryRun,
@@ -12,7 +14,10 @@ export default function TopBar({
     <header className="topbar">
       <div>
         <h1>AI Research Agent</h1>
-        <p className="topline">Django + Celery + Redis research chat with user-isolated session history.</p>
+        <p className="topline">
+          {user?.display_name || user?.username} · {observability?.queue?.mode === "celery" ? "Celery queue" : "Local worker"} ·{" "}
+          {observability?.usage?.total_tokens || 0} tokens this week
+        </p>
       </div>
       <div className="controls">
         <label>

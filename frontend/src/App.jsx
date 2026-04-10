@@ -6,16 +6,26 @@ import Composer from "./components/Composer";
 import DocumentsDrawer from "./components/DocumentsDrawer";
 import HistorySidebar from "./components/HistorySidebar";
 import JobsDrawer from "./components/JobsDrawer";
+import ProfileDrawer from "./components/ProfileDrawer";
 import SourcesDrawer from "./components/SourcesDrawer";
 import TopBar from "./components/TopBar";
 
 const SESSION_KEY = "research-agent-session-id";
+const EMPTY_OBSERVABILITY = {
+  requests: { total: 0, errors: 0, avg_duration_ms: 0, top_paths: [] },
+  research_jobs: { total: 0, queued: 0, running: 0, completed: 0, failed: 0 },
+  document_tasks: { total: 0, queued: 0, running: 0, completed: 0, failed: 0, canceled: 0 },
+  usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, estimated_cost_usd: 0, llm_errors: 0 },
+  recent_errors: [],
+  queue: { mode: "thread", broker_url: "", queue_name: "research" },
+};
 
 export default function App() {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [documents, setDocuments] = useState([]);
+  const [observability, setObservability] = useState(EMPTY_OBSERVABILITY);
   const [query, setQuery] = useState("");
   const [loading, setLoading] = useState(false);
   const [mode, setMode] = useState("multi");
@@ -24,14 +34,20 @@ export default function App() {
   const [drawerReport, setDrawerReport] = useState(null);
   const [jobsDrawerOpen, setJobsDrawerOpen] = useState(false);
   const [documentsDrawerOpen, setDocumentsDrawerOpen] = useState(false);
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [editingSessionId, setEditingSessionId] = useState(null);
   const [editingTitle, setEditingTitle] = useState("");
   const [sessionSearch, setSessionSearch] = useState("");
   const [authMode, setAuthMode] = useState("login");
-  const [credentials, setCredentials] = useState({ username: "", password: "" });
+  const [credentials, setCredentials] = useState({ username: "", password: "", email: "", display_name: "" });
   const [user, setUser] = useState(null);
+  const [profileForm, setProfileForm] = useState({ username: "", email: "", display_name: "" });
+  const [passwordForm, setPasswordForm] = useState({ current_password: "", new_password: "" });
   const [authError, setAuthError] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [profileSuccess, setProfileSuccess] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
   const [docQuestion, setDocQuestion] = useState("");
   const [docAnswer, setDocAnswer] = useState(null);
   const [docError, setDocError] = useState("");
@@ -55,10 +71,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!jobsDrawerOpen || !user) return undefined;
-    void loadJobs();
+    if (!user) return undefined;
+    if (!jobsDrawerOpen) return undefined;
+    void refreshOperationalData();
     const intervalId = window.setInterval(() => {
-      void loadJobs();
+      void refreshOperationalData();
     }, 3000);
     return () => window.clearInterval(intervalId);
   }, [jobsDrawerOpen, user]);
@@ -74,8 +91,8 @@ export default function App() {
   async function bootstrap() {
     const me = await apiFetch("/api/auth/me");
     if (!me.authenticated) return;
-    setUser(me.user);
-    await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+    applyUserState(me.user);
+    await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
     const stored = window.localStorage.getItem(SESSION_KEY);
     if (stored) {
       await loadSessionMessages(stored);
@@ -100,6 +117,21 @@ export default function App() {
     return data;
   }
 
+  function applyUserState(nextUser) {
+    setUser(nextUser);
+    setProfileForm({
+      username: nextUser.username || "",
+      email: nextUser.email || "",
+      display_name: nextUser.display_name || nextUser.username || "",
+    });
+  }
+
+  async function refreshOperationalData() {
+    const [jobsData, observabilityData] = await Promise.all([apiFetch("/api/jobs"), apiFetch("/api/observability")]);
+    setJobs(jobsData.jobs || []);
+    setObservability(observabilityData || EMPTY_OBSERVABILITY);
+  }
+
   async function submitAuth(event) {
     event.preventDefault();
     setAuthError("");
@@ -109,9 +141,9 @@ export default function App() {
         method: "POST",
         body: JSON.stringify(credentials),
       });
-      setUser(data.user);
-      setCredentials({ username: "", password: "" });
-      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+      applyUserState(data.user);
+      setCredentials({ username: "", password: "", email: "", display_name: "" });
+      await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
     } catch (err) {
       setAuthError(err.message);
     }
@@ -130,6 +162,10 @@ export default function App() {
     setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
     setActiveDocumentTask(null);
+    setObservability(EMPTY_OBSERVABILITY);
+    setProfileDrawerOpen(false);
+    setProfileError("");
+    setProfileSuccess("");
     window.localStorage.removeItem(SESSION_KEY);
   }
 
@@ -180,7 +216,7 @@ export default function App() {
     setSelectedDocumentIds([]);
     setActiveDocumentTask(null);
     window.localStorage.removeItem(SESSION_KEY);
-    await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+    await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
   }
 
   async function renameSession(sessionId) {
@@ -200,7 +236,46 @@ export default function App() {
     if (sessionId === currentSessionId) {
       await startNewSession();
     } else {
-      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+      await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
+    }
+  }
+
+  async function saveProfile() {
+    setProfileError("");
+    setProfileSuccess("");
+    setProfileSaving(true);
+    try {
+      const data = await apiFetch("/api/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          email: profileForm.email,
+          display_name: profileForm.display_name,
+        }),
+      });
+      applyUserState(data.user);
+      setProfileSuccess("Profile updated.");
+    } catch (err) {
+      setProfileError(err.message);
+    } finally {
+      setProfileSaving(false);
+    }
+  }
+
+  async function savePassword() {
+    setProfileError("");
+    setProfileSuccess("");
+    setProfileSaving(true);
+    try {
+      await apiFetch("/api/auth/password", {
+        method: "POST",
+        body: JSON.stringify(passwordForm),
+      });
+      setPasswordForm({ current_password: "", new_password: "" });
+      setProfileSuccess("Password updated.");
+    } catch (err) {
+      setProfileError(err.message);
+    } finally {
+      setProfileSaving(false);
     }
   }
 
@@ -227,7 +302,7 @@ export default function App() {
 
       setCurrentSessionId(startData.session_id);
       window.localStorage.setItem(SESSION_KEY, startData.session_id);
-      await Promise.all([loadSessions(), loadJobs(), loadDocuments()]);
+      await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
 
       const loadingId = `${startData.job_id}-loading`;
       setMessages((prev) => [
@@ -261,7 +336,7 @@ export default function App() {
           )
         );
         setLoading(false);
-        await Promise.all([loadSessions(), loadJobs()]);
+        await Promise.all([loadSessions(), refreshOperationalData()]);
       } else if (data.state === "failed") {
         window.clearInterval(pollRef.current);
         pollRef.current = null;
@@ -269,7 +344,7 @@ export default function App() {
           prev.flatMap((msg) => (msg.id === loadingId ? [{ role: "assistant", text: `Error: ${data.error}` }] : [msg]))
         );
         setLoading(false);
-        await loadJobs();
+        await refreshOperationalData();
       } else if (immediate) {
         return;
       }
@@ -280,7 +355,7 @@ export default function App() {
         prev.flatMap((msg) => (msg.id === loadingId ? [{ role: "assistant", text: `Error: ${err.message}` }] : [msg]))
       );
       setLoading(false);
-      await loadJobs();
+      await refreshOperationalData();
     }
   }
 
@@ -363,17 +438,17 @@ export default function App() {
         if (kind === "ingest") {
           if (fileInputRef.current) fileInputRef.current.value = "";
           setDocumentProgressMessages(["Document ingestion complete."]);
-          await Promise.all([loadDocuments(), loadJobs()]);
+          await Promise.all([loadDocuments(), refreshOperationalData()]);
         } else {
           setDocAnswer(data.result);
-          await loadJobs();
+          await refreshOperationalData();
         }
       } else if (data.state === "failed" || data.state === "canceled") {
         window.clearInterval(documentPollRef.current);
         documentPollRef.current = null;
         setActiveDocumentTask(null);
         setDocError(data.error || "Document task did not complete.");
-        await Promise.all([loadDocuments(), loadJobs()]);
+        await Promise.all([loadDocuments(), refreshOperationalData()]);
       } else if (immediate) {
         return;
       }
@@ -382,7 +457,7 @@ export default function App() {
       documentPollRef.current = null;
       setActiveDocumentTask(null);
       setDocError(err.message);
-      await loadJobs();
+      await refreshOperationalData();
     }
   }
 
@@ -392,7 +467,7 @@ export default function App() {
     documentPollRef.current = null;
     setActiveDocumentTask(null);
     setDocumentProgressMessages(["Task canceled by user."]);
-    await Promise.all([loadJobs(), loadDocuments()]);
+    await Promise.all([refreshOperationalData(), loadDocuments()]);
   }
 
   async function retryDocumentTask(taskId) {
@@ -406,7 +481,7 @@ export default function App() {
       void pollDocumentTask(data.task_id, kind);
     }, 1200);
     await pollDocumentTask(data.task_id, kind, true);
-    await loadJobs();
+    await refreshOperationalData();
   }
 
   function toggleDocumentSelection(documentId) {
@@ -447,6 +522,7 @@ export default function App() {
         runningJobsCount={jobs.filter((job) => job.state === "running").length}
         onStartNewSession={startNewSession}
         onLogout={logoutUser}
+        onOpenProfile={() => setProfileDrawerOpen(true)}
         onLoadSession={loadSessionMessages}
         onEditingSessionChange={setEditingSessionId}
         onEditingTitleChange={setEditingTitle}
@@ -458,6 +534,8 @@ export default function App() {
 
       <div className="main-pane">
         <TopBar
+          user={user}
+          observability={observability}
           mode={mode}
           researchDepth={researchDepth}
           dryRun={dryRun}
@@ -472,13 +550,27 @@ export default function App() {
       </div>
 
       <SourcesDrawer report={drawerReport} onClose={() => setDrawerReport(null)} />
+      <ProfileDrawer
+        open={profileDrawerOpen}
+        onClose={() => setProfileDrawerOpen(false)}
+        profile={profileForm}
+        passwordForm={passwordForm}
+        error={profileError}
+        success={profileSuccess}
+        saving={profileSaving}
+        onProfileChange={(field, value) => setProfileForm((prev) => ({ ...prev, [field]: value }))}
+        onPasswordChange={(field, value) => setPasswordForm((prev) => ({ ...prev, [field]: value }))}
+        onSaveProfile={() => void saveProfile()}
+        onSavePassword={() => void savePassword()}
+      />
       <JobsDrawer
         open={jobsDrawerOpen}
         onClose={() => setJobsDrawerOpen(false)}
         jobs={filteredJobs}
+        observability={observability}
         jobsFilter={jobsFilter}
         onFilterChange={setJobsFilter}
-        onRefresh={() => void loadJobs()}
+        onRefresh={() => void refreshOperationalData()}
         onCancel={cancelDocumentTask}
         onRetry={retryDocumentTask}
       />

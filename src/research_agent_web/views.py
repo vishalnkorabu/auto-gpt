@@ -11,12 +11,14 @@ from django.contrib.auth.models import User
 from django.db import transaction
 from django.db.models import Q
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods
 
 from .document_service import delete_uploaded_file, persist_upload
 from .export_service import export_report_as_docx, export_report_as_pdf
-from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument
+from .models import ConversationMessage, ConversationSession, DocumentTask, ResearchJob, UserDocument, UserProfile
+from .observability import build_observability_snapshot
 from .tasks import run_document_task, run_document_task_sync, run_research_job, run_research_job_sync
 
 
@@ -32,10 +34,7 @@ def auth_me(request: HttpRequest) -> JsonResponse:
     return JsonResponse(
         {
             "authenticated": True,
-            "user": {
-                "id": request.user.id,
-                "username": request.user.username,
-            },
+            "user": _serialize_user(request.user),
         }
     )
 
@@ -46,14 +45,21 @@ def auth_register(request: HttpRequest) -> JsonResponse:
     payload = _json_body(request)
     username = (payload.get("username") or "").strip()
     password = payload.get("password") or ""
+    email = (payload.get("email") or "").strip()
+    display_name = (payload.get("display_name") or username).strip()
     if len(username) < 3 or len(password) < 6:
         return JsonResponse({"detail": "Username must be 3+ chars and password 6+ chars."}, status=400)
     if User.objects.filter(username=username).exists():
         return JsonResponse({"detail": "Username already exists."}, status=400)
+    if email and User.objects.filter(email__iexact=email).exists():
+        return JsonResponse({"detail": "Email already exists."}, status=400)
 
-    user = User.objects.create_user(username=username, password=password)
+    user = User.objects.create_user(username=username, password=password, email=email)
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    profile.display_name = display_name[:120] or username
+    profile.save(update_fields=["display_name", "updated_at"])
     login(request, user)
-    return JsonResponse({"authenticated": True, "user": {"id": user.id, "username": user.username}}, status=201)
+    return JsonResponse({"authenticated": True, "user": _serialize_user(user)}, status=201)
 
 
 @csrf_exempt
@@ -66,7 +72,7 @@ def auth_login(request: HttpRequest) -> JsonResponse:
     if user is None:
         return JsonResponse({"detail": "Invalid credentials."}, status=401)
     login(request, user)
-    return JsonResponse({"authenticated": True, "user": {"id": user.id, "username": user.username}})
+    return JsonResponse({"authenticated": True, "user": _serialize_user(user)})
 
 
 @csrf_exempt
@@ -74,6 +80,52 @@ def auth_login(request: HttpRequest) -> JsonResponse:
 def auth_logout(request: HttpRequest) -> JsonResponse:
     logout(request)
     return JsonResponse({"authenticated": False})
+
+
+@csrf_exempt
+@require_http_methods(["PATCH"])
+def auth_profile(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    payload = _json_body(request)
+    email = (payload.get("email") or "").strip()
+    display_name = (payload.get("display_name") or "").strip()
+
+    if email and User.objects.filter(email__iexact=email).exclude(id=user.id).exists():
+        return JsonResponse({"detail": "Email already exists."}, status=400)
+
+    user.email = email
+    user.save(update_fields=["email"])
+    profile, _ = UserProfile.objects.get_or_create(user=user)
+    if display_name:
+        profile.display_name = display_name[:120]
+        profile.save(update_fields=["display_name", "updated_at"])
+
+    return JsonResponse({"user": _serialize_user(user)})
+
+
+@csrf_exempt
+@require_http_methods(["POST"])
+def auth_password(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    payload = _json_body(request)
+    current_password = payload.get("current_password") or ""
+    new_password = payload.get("new_password") or ""
+
+    if len(new_password) < 6:
+        return JsonResponse({"detail": "New password must be at least 6 characters."}, status=400)
+    if not user.check_password(current_password):
+        return JsonResponse({"detail": "Current password is incorrect."}, status=400)
+
+    user.set_password(new_password)
+    user.save(update_fields=["password"])
+    login(request, user)
+    return JsonResponse({"updated": True})
 
 
 @csrf_exempt
@@ -280,6 +332,22 @@ def jobs_view(request: HttpRequest) -> JsonResponse:
             "jobs": combined
         }
     )
+
+
+@require_GET
+def observability_view(request: HttpRequest) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    queue_mode = "celery" if settings.RESEARCH_USE_CELERY else "thread"
+    snapshot = build_observability_snapshot(user_id=user.id)
+    snapshot["queue"] = {
+        "mode": queue_mode,
+        "broker_url": settings.CELERY_BROKER_URL if settings.RESEARCH_USE_CELERY else "",
+        "queue_name": settings.RESEARCH_QUEUE_NAME,
+    }
+    return JsonResponse(snapshot)
 
 
 @csrf_exempt
@@ -593,11 +661,17 @@ def _title_from_query(query: str) -> str:
 def _dispatch_research_job(job_id: str) -> None:
     if settings.RESEARCH_USE_CELERY:
         try:
-            run_research_job.delay(job_id)
+            async_result = run_research_job.apply_async(args=[job_id], queue=settings.RESEARCH_QUEUE_NAME)
+            ResearchJob.objects.filter(id=job_id).update(
+                queue_backend="celery",
+                celery_task_id=async_result.id,
+                updated_at=timezone.now(),
+            )
             return
         except Exception:
             pass
 
+    ResearchJob.objects.filter(id=job_id).update(queue_backend="thread", celery_task_id="", updated_at=timezone.now())
     thread = Thread(target=run_research_job_sync, args=(job_id,), daemon=True)
     thread.start()
 
@@ -609,16 +683,23 @@ def _latest_progress(job: ResearchJob) -> str:
 
 def _dispatch_document_task(task_id: str) -> None:
     if "test" in sys.argv:
+        DocumentTask.objects.filter(id=task_id).update(queue_backend="sync", celery_task_id="", updated_at=timezone.now())
         run_document_task_sync(task_id)
         return
 
     if settings.RESEARCH_USE_CELERY:
         try:
-            run_document_task.delay(task_id)
+            async_result = run_document_task.apply_async(args=[task_id], queue=settings.RESEARCH_QUEUE_NAME)
+            DocumentTask.objects.filter(id=task_id).update(
+                queue_backend="celery",
+                celery_task_id=async_result.id,
+                updated_at=timezone.now(),
+            )
             return
         except Exception:
             pass
 
+    DocumentTask.objects.filter(id=task_id).update(queue_backend="thread", celery_task_id="", updated_at=timezone.now())
     thread = Thread(target=run_document_task_sync, args=(task_id,), daemon=True)
     thread.start()
 
@@ -639,8 +720,11 @@ def _serialize_research_job(job: ResearchJob) -> dict:
         "research_depth": job.research_depth,
         "dry_run": job.dry_run,
         "state": job.state,
+        "queue_backend": job.queue_backend,
+        "celery_task_id": job.celery_task_id or None,
         "error": job.error,
         "output_dir": job.output_dir,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "completed_at": job.completed_at.isoformat() if job.completed_at else None,
@@ -658,10 +742,23 @@ def _serialize_document_task(task: DocumentTask) -> dict:
         "mode": "document",
         "dry_run": False,
         "state": task.state,
+        "queue_backend": task.queue_backend,
+        "celery_task_id": task.celery_task_id or None,
         "error": task.error,
         "output_dir": "",
+        "started_at": task.started_at.isoformat() if task.started_at else None,
         "created_at": task.created_at.isoformat(),
         "updated_at": task.updated_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
         "latest_progress": _latest_document_progress(task),
+    }
+
+
+def _serialize_user(user: User) -> dict:
+    profile, _ = UserProfile.objects.get_or_create(user=user, defaults={"display_name": user.username})
+    return {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": profile.display_name or user.username,
     }

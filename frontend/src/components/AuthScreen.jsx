@@ -24,6 +24,21 @@ export default function AuthScreen({
           onChange={(e) => onCredentialsChange((prev) => ({ ...prev, username: e.target.value }))}
           placeholder="Username"
         />
+        {authMode === "register" ? (
+          <>
+            <input
+              value={credentials.display_name}
+              onChange={(e) => onCredentialsChange((prev) => ({ ...prev, display_name: e.target.value }))}
+              placeholder="Display name"
+            />
+            <input
+              type="email"
+              value={credentials.email}
+              onChange={(e) => onCredentialsChange((prev) => ({ ...prev, email: e.target.value }))}
+              placeholder="Email"
+            />
+          </>
+        ) : null}
         <input
           type="password"
           value={credentials.password}

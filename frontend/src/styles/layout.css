@@ -184,6 +184,24 @@
   font-size: 0.9rem;
 }
 
+.field-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.field-grid span {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.field-grid input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  font: inherit;
+  background: #fff;
+}
+
 @media (max-width: 900px) {
   .app-layout {
     grid-template-columns: 1fr;

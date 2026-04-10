@@ -29,6 +29,7 @@ from .models import (
     SavedReport,
     UserDocument,
 )
+from .observability import observe_document_task, observe_research_job
 
 
 @shared_task(bind=True)
@@ -48,49 +49,54 @@ def run_research_job_sync(job_id: str) -> None:
     def emit(message: str) -> None:
         _append_progress(parsed_job_id, message)
 
-    ResearchJob.objects.filter(id=parsed_job_id).update(state="running", updated_at=timezone.now())
+    ResearchJob.objects.filter(id=parsed_job_id).update(
+        state="running",
+        started_at=timezone.now(),
+        updated_at=timezone.now(),
+    )
 
     try:
-        settings = apply_research_depth(
-            load_settings(require_api_keys=not job.dry_run),
-            job.research_depth,
-        )
-        agent = ResearchAgent(settings)
-        run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path("reports/api") / run_id
-        result = agent.run(
-            query=job.query,
-            output_dir=output_dir,
-            mode=job.mode,
-            dry_run=job.dry_run,
-            progress_callback=emit,
-        )
-        answer = _build_brief(result.markdown)
-        report = build_presentable_report(result.markdown, result.sources, result.summaries)
-        assistant_message = ConversationMessage.objects.create(
-            session_id=job.session_id,
-            role="assistant",
-            content=answer,
-            report_markdown=result.markdown,
-            report_payload=report,
-            sources_count=len(result.sources),
-        )
-        SavedReport.objects.create(
-            session_id=job.session_id,
-            assistant_message=assistant_message,
-            headline=report.get("headline", "Research report"),
-            confidence_score=report.get("confidence", {}).get("score", 0.0),
-            citations_count=report.get("stats", {}).get("citations_count", 0),
-            sources_count=report.get("stats", {}).get("sources_count", 0),
-            output_dir=str(output_dir),
-        )
-        ResearchJob.objects.filter(id=parsed_job_id).update(
-            state="completed",
-            assistant_message=assistant_message,
-            output_dir=str(output_dir),
-            completed_at=timezone.now(),
-            updated_at=timezone.now(),
-        )
+        with observe_research_job(parsed_job_id):
+            settings = apply_research_depth(
+                load_settings(require_api_keys=not job.dry_run),
+                job.research_depth,
+            )
+            agent = ResearchAgent(settings)
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_dir = Path("reports/api") / run_id
+            result = agent.run(
+                query=job.query,
+                output_dir=output_dir,
+                mode=job.mode,
+                dry_run=job.dry_run,
+                progress_callback=emit,
+            )
+            answer = _build_brief(result.markdown)
+            report = build_presentable_report(result.markdown, result.sources, result.summaries)
+            assistant_message = ConversationMessage.objects.create(
+                session_id=job.session_id,
+                role="assistant",
+                content=answer,
+                report_markdown=result.markdown,
+                report_payload=report,
+                sources_count=len(result.sources),
+            )
+            SavedReport.objects.create(
+                session_id=job.session_id,
+                assistant_message=assistant_message,
+                headline=report.get("headline", "Research report"),
+                confidence_score=report.get("confidence", {}).get("score", 0.0),
+                citations_count=report.get("stats", {}).get("citations_count", 0),
+                sources_count=report.get("stats", {}).get("sources_count", 0),
+                output_dir=str(output_dir),
+            )
+            ResearchJob.objects.filter(id=parsed_job_id).update(
+                state="completed",
+                assistant_message=assistant_message,
+                output_dir=str(output_dir),
+                completed_at=timezone.now(),
+                updated_at=timezone.now(),
+            )
     except Exception as exc:
         ResearchJob.objects.filter(id=parsed_job_id).update(
             state="failed",
@@ -110,79 +116,86 @@ def run_document_task_sync(task_id: str) -> None:
     if task.state == "canceled":
         return
 
-    DocumentTask.objects.filter(id=parsed_task_id).update(state="running", updated_at=timezone.now(), error="", result=None)
+    DocumentTask.objects.filter(id=parsed_task_id).update(
+        state="running",
+        started_at=timezone.now(),
+        updated_at=timezone.now(),
+        error="",
+        result=None,
+    )
 
     try:
-        if task.task_type == "ingest":
-            if task.document_id is None:
-                raise ValueError("Document ingest task is missing a document.")
-            _ensure_task_not_canceled(parsed_task_id)
-            emit("Reading uploaded file.")
-            result = process_document(task.document)
-            _ensure_task_not_canceled(parsed_task_id)
-            emit("Chunking complete.")
-            DocumentTask.objects.filter(id=parsed_task_id).update(
-                state="completed",
-                result=result,
-                completed_at=timezone.now(),
-                updated_at=timezone.now(),
-            )
-            return
-
-        if task.task_type == "query":
-            _ensure_task_not_canceled(parsed_task_id)
-            emit("Selecting relevant document chunks.")
-            document_ids = task.payload.get("document_ids") or []
-            queryset = UserDocument.objects.prefetch_related("chunks").filter(owner_id=task.owner_id, status="processed")
-            if task.session_id:
-                queryset = queryset.filter(session_id=task.session_id)
-            if document_ids:
-                queryset = queryset.filter(id__in=document_ids)
-            documents = list(queryset[:12])
-            if not documents:
-                raise ValueError("No processed documents matched this query.")
-            _ensure_task_not_canceled(parsed_task_id)
-            emit("Generating grounded document answer.")
-            question = task.payload.get("question", "")
-            result = answer_document_question(question, documents)
-            if task.payload.get("include_research"):
+        with observe_document_task(parsed_task_id):
+            if task.task_type == "ingest":
+                if task.document_id is None:
+                    raise ValueError("Document ingest task is missing a document.")
                 _ensure_task_not_canceled(parsed_task_id)
-                emit("Running live web research.")
-                dry_run = bool(task.payload.get("dry_run", False))
-                settings = apply_research_depth(
-                    load_settings(require_api_keys=not dry_run),
-                    task.payload.get("research_depth") or "standard",
+                emit("Reading uploaded file.")
+                result = process_document(task.document)
+                _ensure_task_not_canceled(parsed_task_id)
+                emit("Chunking complete.")
+                DocumentTask.objects.filter(id=parsed_task_id).update(
+                    state="completed",
+                    result=result,
+                    completed_at=timezone.now(),
+                    updated_at=timezone.now(),
                 )
-                agent = ResearchAgent(settings)
-                run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-                output_dir = Path("reports/document_hybrid") / run_id
-                research_result = agent.run(
-                    query=question,
-                    output_dir=output_dir,
-                    mode=task.payload.get("research_mode", "multi"),
-                    dry_run=dry_run,
-                    progress_callback=emit,
+                return
+
+            if task.task_type == "query":
+                _ensure_task_not_canceled(parsed_task_id)
+                emit("Selecting relevant document chunks.")
+                document_ids = task.payload.get("document_ids") or []
+                queryset = UserDocument.objects.prefetch_related("chunks").filter(owner_id=task.owner_id, status="processed")
+                if task.session_id:
+                    queryset = queryset.filter(session_id=task.session_id)
+                if document_ids:
+                    queryset = queryset.filter(id__in=document_ids)
+                documents = list(queryset[:12])
+                if not documents:
+                    raise ValueError("No processed documents matched this query.")
+                _ensure_task_not_canceled(parsed_task_id)
+                emit("Generating grounded document answer.")
+                question = task.payload.get("question", "")
+                result = answer_document_question(question, documents)
+                if task.payload.get("include_research"):
+                    _ensure_task_not_canceled(parsed_task_id)
+                    emit("Running live web research.")
+                    dry_run = bool(task.payload.get("dry_run", False))
+                    settings = apply_research_depth(
+                        load_settings(require_api_keys=not dry_run),
+                        task.payload.get("research_depth") or "standard",
+                    )
+                    agent = ResearchAgent(settings)
+                    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    output_dir = Path("reports/document_hybrid") / run_id
+                    research_result = agent.run(
+                        query=question,
+                        output_dir=output_dir,
+                        mode=task.payload.get("research_mode", "multi"),
+                        dry_run=dry_run,
+                        progress_callback=emit,
+                    )
+                    presentable = build_presentable_report(
+                        research_result.markdown,
+                        research_result.sources,
+                        research_result.summaries,
+                    )
+                    result = build_hybrid_answer(
+                        question=question,
+                        document_result=result,
+                        research_summary=presentable.get("summary") or presentable.get("response_text", ""),
+                        research_sources=presentable.get("sources", []),
+                        settings=settings,
+                    )
+                emit("Document answer ready.")
+                DocumentTask.objects.filter(id=parsed_task_id).update(
+                    state="completed",
+                    result=result,
+                    completed_at=timezone.now(),
+                    updated_at=timezone.now(),
                 )
-                presentable = build_presentable_report(
-                    research_result.markdown,
-                    research_result.sources,
-                    research_result.summaries,
-                )
-                result = build_hybrid_answer(
-                    question=question,
-                    document_result=result,
-                    research_summary=presentable.get("summary") or presentable.get("response_text", ""),
-                    research_sources=presentable.get("sources", []),
-                    settings=settings,
-                )
-            emit("Document answer ready.")
-            DocumentTask.objects.filter(id=parsed_task_id).update(
-                state="completed",
-                result=result,
-                completed_at=timezone.now(),
-                updated_at=timezone.now(),
-            )
-            return
+                return
 
         raise ValueError(f"Unsupported document task type: {task.task_type}")
     except TaskCanceledError:

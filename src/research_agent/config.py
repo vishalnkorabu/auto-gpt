@@ -13,6 +13,8 @@ class Settings:
     llm_api_key: str
     llm_model: str
     llm_base_url: str | None
+    llm_input_cost_per_million: float
+    llm_output_cost_per_million: float
     tavily_api_key: str | None
     serpapi_api_key: str | None
     embedding_model: str
@@ -54,6 +56,8 @@ def load_settings(require_api_keys: bool = True) -> Settings:
         llm_api_key=llm_api_key,
         llm_model=llm_model,
         llm_base_url=llm_base_url,
+        llm_input_cost_per_million=float(os.getenv("LLM_INPUT_COST_PER_MILLION", "0")),
+        llm_output_cost_per_million=float(os.getenv("LLM_OUTPUT_COST_PER_MILLION", "0")),
         tavily_api_key=os.getenv("TAVILY_API_KEY", "").strip() or None,
         serpapi_api_key=os.getenv("SERPAPI_API_KEY", "").strip() or None,
         embedding_model=os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2").strip(),
