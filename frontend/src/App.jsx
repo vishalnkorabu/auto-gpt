@@ -56,6 +56,8 @@ export default function App() {
   const [includeResearch, setIncludeResearch] = useState(false);
   const [documentProgressMessages, setDocumentProgressMessages] = useState([]);
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
+  const [editingDocumentId, setEditingDocumentId] = useState(null);
+  const [editingDocumentName, setEditingDocumentName] = useState("");
   const [jobsFilter, setJobsFilter] = useState("all");
   const [activeDocumentTask, setActiveDocumentTask] = useState(null);
   const fileInputRef = useRef(null);
@@ -161,6 +163,8 @@ export default function App() {
     setDocError("");
     setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
+    setEditingDocumentId(null);
+    setEditingDocumentName("");
     setActiveDocumentTask(null);
     setObservability(EMPTY_OBSERVABILITY);
     setProfileDrawerOpen(false);
@@ -214,6 +218,8 @@ export default function App() {
     setDocError("");
     setDocumentProgressMessages([]);
     setSelectedDocumentIds([]);
+    setEditingDocumentId(null);
+    setEditingDocumentName("");
     setActiveDocumentTask(null);
     window.localStorage.removeItem(SESSION_KEY);
     await Promise.all([loadSessions(), refreshOperationalData(), loadDocuments()]);
@@ -484,6 +490,52 @@ export default function App() {
     await refreshOperationalData();
   }
 
+  function startRenameDocument(document) {
+    setEditingDocumentId(document.id);
+    setEditingDocumentName(document.name);
+  }
+
+  function cancelRenameDocument() {
+    setEditingDocumentId(null);
+    setEditingDocumentName("");
+  }
+
+  async function saveDocumentRename(documentId) {
+    const trimmed = editingDocumentName.trim();
+    if (!trimmed) return;
+    await apiFetch(`/api/documents/${documentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: trimmed }),
+    });
+    cancelRenameDocument();
+    await loadDocuments();
+  }
+
+  async function attachDocument(documentId, sessionId) {
+    await apiFetch(`/api/documents/${documentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    await loadDocuments();
+  }
+
+  async function detachDocument(documentId) {
+    await apiFetch(`/api/documents/${documentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ session_id: null }),
+    });
+    await loadDocuments();
+  }
+
+  async function deleteDocument(documentId) {
+    await apiFetch(`/api/documents/${documentId}`, { method: "DELETE" });
+    setSelectedDocumentIds((prev) => prev.filter((id) => id !== documentId));
+    if (editingDocumentId === documentId) {
+      cancelRenameDocument();
+    }
+    await Promise.all([loadDocuments(), refreshOperationalData()]);
+  }
+
   function toggleDocumentSelection(documentId) {
     setSelectedDocumentIds((prev) =>
       prev.includes(documentId) ? prev.filter((id) => id !== documentId) : [...prev, documentId]
@@ -591,7 +643,16 @@ export default function App() {
         documentProgressMessages={documentProgressMessages}
         activeDocumentTask={activeDocumentTask}
         selectedDocumentIds={selectedDocumentIds}
+        editingDocumentId={editingDocumentId}
+        editingDocumentName={editingDocumentName}
+        setEditingDocumentName={setEditingDocumentName}
         toggleDocumentSelection={toggleDocumentSelection}
+        onStartRenameDocument={startRenameDocument}
+        onSaveDocumentRename={saveDocumentRename}
+        onCancelRenameDocument={cancelRenameDocument}
+        onAttachDocument={attachDocument}
+        onDetachDocument={detachDocument}
+        onDeleteDocument={deleteDocument}
         onUpload={uploadDocument}
         onAsk={submitDocumentQuestion}
         onCancelTask={cancelDocumentTask}

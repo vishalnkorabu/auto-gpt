@@ -194,6 +194,41 @@ class SessionApiTests(TestCase):
         retried_status = self._wait_for_document_task(task.id)
         self.assertEqual(retried_status["state"], "completed")
 
+    def test_rename_attach_detach_and_delete_document(self) -> None:
+        session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI")
+        upload = SimpleUploadedFile(
+            "healthcare-note.txt",
+            b"Healthcare startups use AI to reduce clinician admin burden and improve triage speed.",
+            content_type="text/plain",
+        )
+        upload_response = self.client.post("/api/documents", data={"file": upload})
+        upload_task_id = upload_response.json()["task_id"]
+        self._wait_for_document_task(upload_task_id)
+
+        document = UserDocument.objects.get()
+
+        rename_response = self.client.patch(
+            f"/api/documents/{document.id}",
+            data=f'{{"name":"AI startup notes","session_id":"{session.id}"}}',
+            content_type="application/json",
+        )
+        self.assertEqual(rename_response.status_code, 200)
+        payload = rename_response.json()["document"]
+        self.assertEqual(payload["name"], "AI startup notes")
+        self.assertEqual(payload["session_id"], str(session.id))
+
+        detach_response = self.client.patch(
+            f"/api/documents/{document.id}",
+            data='{"session_id":null}',
+            content_type="application/json",
+        )
+        self.assertEqual(detach_response.status_code, 200)
+        self.assertIsNone(detach_response.json()["document"]["session_id"])
+
+        delete_response = self.client.delete(f"/api/documents/{document.id}")
+        self.assertEqual(delete_response.status_code, 200)
+        self.assertFalse(UserDocument.objects.filter(id=document.id).exists())
+
     def test_observability_endpoint_returns_request_and_usage_metrics(self) -> None:
         session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI")
         user_message = ConversationMessage.objects.create(session=session, role="user", content="Question")

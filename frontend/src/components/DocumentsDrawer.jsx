@@ -15,7 +15,16 @@ export default function DocumentsDrawer({
   documentProgressMessages,
   activeDocumentTask,
   selectedDocumentIds,
+  editingDocumentId,
+  editingDocumentName,
+  setEditingDocumentName,
   toggleDocumentSelection,
+  onStartRenameDocument,
+  onSaveDocumentRename,
+  onCancelRenameDocument,
+  onAttachDocument,
+  onDetachDocument,
+  onDeleteDocument,
   onUpload,
   onAsk,
   onCancelTask,
@@ -136,21 +145,65 @@ export default function DocumentsDrawer({
             </div>
             <div className="document-list">
               {documents.map((document) => (
-                <label className="document-card" key={document.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedDocumentIds.includes(document.id)}
-                    disabled={document.status !== "processed"}
-                    onChange={() => toggleDocumentSelection(document.id)}
-                  />
-                  <div>
-                    <div className="document-name">{document.name}</div>
-                    <div className="document-meta">
-                      {document.file_type.toUpperCase()} · {document.chunk_count} chunks · {document.status}
-                      {document.session_title ? ` · ${document.session_title}` : " · account-wide"}
+                <div className="document-card" key={document.id}>
+                  <label className="document-select-row">
+                    <input
+                      type="checkbox"
+                      checked={selectedDocumentIds.includes(document.id)}
+                      disabled={document.status !== "processed"}
+                      onChange={() => toggleDocumentSelection(document.id)}
+                    />
+                    <div className="document-main">
+                      {editingDocumentId === document.id ? (
+                        <div className="document-rename-row">
+                          <input
+                            className="document-rename-input"
+                            type="text"
+                            value={editingDocumentName}
+                            onChange={(event) => setEditingDocumentName(event.target.value)}
+                            placeholder="Document name"
+                          />
+                          <div className="document-actions">
+                            <button className="mini-button" type="button" onClick={() => onSaveDocumentRename(document.id)}>
+                              Save
+                            </button>
+                            <button className="mini-button ghost" type="button" onClick={onCancelRenameDocument}>
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="document-name">{document.name}</div>
+                          <div className="document-meta">
+                            {document.file_type.toUpperCase()} · {document.chunk_count} chunks · {document.status}
+                            {document.session_title ? ` · ${document.session_title}` : " · account-wide"}
+                          </div>
+                        </>
+                      )}
                     </div>
-                  </div>
-                </label>
+                  </label>
+                  {editingDocumentId !== document.id ? (
+                    <div className="document-actions">
+                      <button className="mini-button ghost" type="button" onClick={() => onStartRenameDocument(document)}>
+                        Rename
+                      </button>
+                      {currentSessionId && document.session_id !== currentSessionId ? (
+                        <button className="mini-button" type="button" onClick={() => onAttachDocument(document.id, currentSessionId)}>
+                          Attach here
+                        </button>
+                      ) : null}
+                      {document.session_id ? (
+                        <button className="mini-button ghost" type="button" onClick={() => onDetachDocument(document.id)}>
+                          Detach
+                        </button>
+                      ) : null}
+                      <button className="mini-button danger" type="button" onClick={() => onDeleteDocument(document.id)}>
+                        Delete
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
               ))}
             </div>
           </section>

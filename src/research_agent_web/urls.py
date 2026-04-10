@@ -21,6 +21,7 @@ urlpatterns = [
     path("jobs", views.jobs_view, name="jobs"),
     path("observability", views.observability_view, name="observability"),
     path("documents", views.documents_view, name="documents"),
+    path("documents/<uuid:document_id>", views.document_detail, name="document-detail"),
     path("documents/query", views.document_query, name="document-query"),
     path("documents/tasks/<uuid:task_id>", views.document_task_status, name="document-task-status"),
     path("documents/tasks/<uuid:task_id>/cancel", views.document_task_cancel, name="document-task-cancel"),

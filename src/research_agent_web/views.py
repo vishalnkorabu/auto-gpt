@@ -400,6 +400,63 @@ def documents_view(request: HttpRequest) -> JsonResponse:
 
 
 @csrf_exempt
+@require_http_methods(["GET", "PATCH", "DELETE"])
+def document_detail(request: HttpRequest, document_id: UUID) -> JsonResponse:
+    user = _require_user(request)
+    if isinstance(user, JsonResponse):
+        return user
+
+    try:
+        document = UserDocument.objects.select_related("session").get(id=document_id, owner=user)
+    except UserDocument.DoesNotExist:
+        return JsonResponse({"detail": "Document not found."}, status=404)
+
+    if request.method == "GET":
+        return JsonResponse({"document": _serialize_document(document)})
+
+    if request.method == "PATCH":
+        payload = _json_body(request)
+        updates: list[str] = []
+
+        if "name" in payload:
+            name = (payload.get("name") or "").strip()
+            if not name:
+                return JsonResponse({"detail": "Document name is required."}, status=400)
+            document.name = name[:255]
+            updates.append("name")
+
+        if "session_id" in payload:
+            session_id = payload.get("session_id")
+            if session_id in {"", None}:
+                document.session = None
+            else:
+                try:
+                    document.session = _get_session(user, UUID(str(session_id)))
+                except (ValueError, TypeError) as exc:
+                    return JsonResponse({"detail": str(exc)}, status=404)
+            updates.append("session")
+
+        if not updates:
+            return JsonResponse({"detail": "No document updates were provided."}, status=400)
+
+        updates.append("updated_at")
+        document.save(update_fields=updates)
+        return JsonResponse({"document": _serialize_document(document)})
+
+    if document.storage_path:
+        delete_uploaded_file(document.storage_path)
+
+    document.tasks.filter(state__in={"queued", "running"}).update(
+        state="canceled",
+        error="Document deleted by user.",
+        updated_at=timezone.now(),
+        completed_at=timezone.now(),
+    )
+    document.delete()
+    return JsonResponse({"deleted": True, "document_id": str(document_id)})
+
+
+@csrf_exempt
 @require_http_methods(["POST"])
 def document_query(request: HttpRequest) -> JsonResponse:
     user = _require_user(request)
@@ -464,6 +521,7 @@ def document_task_status(request: HttpRequest, task_id: UUID) -> JsonResponse:
             "task_type": task.task_type,
             "state": task.state,
             "title": task.title,
+            "queue_backend": task.queue_backend,
             "document": _serialize_document(task.document) if task.document_id else None,
             "progress_messages": [event.message for event in task.progress_events.all()],
             "result": task.result,

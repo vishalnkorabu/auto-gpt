@@ -244,21 +244,52 @@
 }
 
 .document-card {
-  display: flex;
+  display: grid;
   gap: 12px;
-  align-items: start;
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 12px;
   background: rgba(255, 255, 255, 0.6);
 }
 
-.document-card:has(input:disabled) {
+.document-select-row {
+  display: flex;
+  gap: 12px;
+  align-items: start;
+}
+
+.document-card:has(input:disabled) .document-select-row {
   opacity: 0.78;
 }
 
-.document-card input {
+.document-select-row input {
   margin-top: 3px;
+}
+
+.document-main {
+  display: grid;
+  gap: 6px;
+  flex: 1;
+}
+
+.document-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.document-rename-row {
+  display: grid;
+  gap: 10px;
+}
+
+.document-rename-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: inherit;
+  background: #fff;
 }
 
 .doc-answer-card pre,
