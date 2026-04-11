@@ -243,6 +243,26 @@
   gap: 10px;
 }
 
+.document-library-toolbar {
+  display: grid;
+  gap: 10px;
+}
+
+.document-search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 12px;
+  font: inherit;
+  background: #fff;
+}
+
+.document-filter-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .document-card {
   display: grid;
   gap: 12px;
@@ -292,6 +312,14 @@
   background: #fff;
 }
 
+.empty-library-state {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 16px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.45);
+}
+
 .doc-answer-card pre,
 .support-card p {
   margin: 0;
@@ -318,6 +346,44 @@
   background: rgba(180, 79, 42, 0.12);
   color: var(--accent);
   text-decoration: none;
+}
+
+.modal-shell {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(25, 18, 12, 0.35);
+}
+
+.modal-card {
+  position: relative;
+  width: min(460px, calc(100vw - 32px));
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 20px;
+  background: #fffaf1;
+  box-shadow: var(--shadow);
+  display: grid;
+  gap: 12px;
+}
+
+.modal-card h3 {
+  margin: 0;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 900px) {

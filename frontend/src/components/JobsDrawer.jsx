@@ -37,13 +37,64 @@ export default function JobsDrawer({
               <article className="metric-card">
                 <div className="drawer-kicker">Requests</div>
                 <strong>{observability.requests?.total || 0}</strong>
-                <span>{observability.requests?.errors || 0} API errors in 7 days</span>
+                <span>
+                  {observability.requests?.errors || 0} API errors · avg {observability.requests?.avg_duration_ms || 0} ms
+                </span>
               </article>
               <article className="metric-card">
                 <div className="drawer-kicker">Usage</div>
                 <strong>{observability.usage?.total_tokens || 0} tokens</strong>
-                <span>${(observability.usage?.estimated_cost_usd || 0).toFixed(4)} estimated cost</span>
+                <span>
+                  ${(observability.usage?.estimated_cost_usd || 0).toFixed(4)} estimated cost · avg{" "}
+                  {observability.usage?.avg_duration_ms || 0} ms
+                </span>
               </article>
+              <article className="metric-card">
+                <div className="drawer-kicker">Research jobs</div>
+                <strong>{observability.research_jobs?.completed || 0} completed</strong>
+                <span>avg {observability.research_jobs?.avg_duration_ms || 0} ms</span>
+              </article>
+              <article className="metric-card">
+                <div className="drawer-kicker">Document tasks</div>
+                <strong>{observability.document_tasks?.completed || 0} completed</strong>
+                <span>avg {observability.document_tasks?.avg_duration_ms || 0} ms</span>
+              </article>
+              <article className="metric-card">
+                <div className="drawer-kicker">Retention</div>
+                <strong>{observability.retention?.processed_documents || 0} processed docs</strong>
+                <span>
+                  {observability.retention?.expired_documents || 0} past {observability.retention?.retention_days || 0} days
+                </span>
+              </article>
+            </section>
+          ) : null}
+          {observability?.usage?.providers?.length ? (
+            <section className="panel-card">
+              <div className="panel-title-row">
+                <div>
+                  <h3>Usage breakdown</h3>
+                  <p>Provider and model usage captured from research and document runs.</p>
+                </div>
+              </div>
+              <div className="document-list">
+                {observability.usage.providers.map((item) => (
+                  <article className="job-card" key={`${item.provider}-${item.model}`}>
+                    <div className="job-row">
+                      <div className="job-query">
+                        {item.provider} · {item.model}
+                      </div>
+                      <span className={`status-pill ${item.errors ? "failed" : "completed"}`}>
+                        {item.calls} calls
+                      </span>
+                    </div>
+                    <div className="job-meta">
+                      {item.total_tokens} tokens · ${(item.estimated_cost_usd || 0).toFixed(4)} cost · avg{" "}
+                      {item.avg_duration_ms || 0} ms
+                    </div>
+                    {item.errors ? <div className="job-error">{item.errors} failed calls in the last 7 days.</div> : null}
+                  </article>
+                ))}
+              </div>
             </section>
           ) : null}
           {observability?.recent_errors?.length ? (

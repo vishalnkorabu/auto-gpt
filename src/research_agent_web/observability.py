@@ -5,12 +5,14 @@ from decimal import Decimal
 from typing import Iterator
 from uuid import UUID
 
-from django.db.models import Avg, Count, Q, Sum
+from django.conf import settings
+from django.db.models import Avg, Count, DurationField, ExpressionWrapper, F, Q, Sum
 from django.utils import timezone
 
 from research_agent.observability import LLMUsageRecord, usage_recorder
 
-from .models import ApiRequestLog, DocumentTask, LLMUsageEvent, ResearchJob
+from .models import ApiRequestLog, DocumentTask, LLMUsageEvent, ResearchJob, UserDocument
+from .retention import get_expired_processed_documents
 
 
 @contextmanager
@@ -95,6 +97,25 @@ def build_observability_snapshot(*, user_id: int | None = None) -> dict:
         total_tokens=Sum("total_tokens"),
         estimated_cost_usd=Sum("estimated_cost_usd"),
         llm_errors=Count("id", filter=Q(success=False)),
+        avg_duration=Avg("duration_ms"),
+    )
+    duration_expression = ExpressionWrapper(F("completed_at") - F("started_at"), output_field=DurationField())
+    research_duration = research_jobs.filter(started_at__isnull=False, completed_at__isnull=False).aggregate(
+        avg_duration=Avg(duration_expression)
+    )
+    document_duration = document_tasks.filter(started_at__isnull=False, completed_at__isnull=False).aggregate(
+        avg_duration=Avg(duration_expression)
+    )
+    provider_breakdown = list(
+        usage_events.values("provider", "model")
+        .annotate(
+            calls=Count("id"),
+            total_tokens=Sum("total_tokens"),
+            estimated_cost_usd=Sum("estimated_cost_usd"),
+            errors=Count("id", filter=Q(success=False)),
+            avg_duration=Avg("duration_ms"),
+        )
+        .order_by("-total_tokens", "provider", "model")[:5]
     )
     top_paths = list(
         request_logs.values("path")
@@ -119,6 +140,12 @@ def build_observability_snapshot(*, user_id: int | None = None) -> dict:
         }
         for item in usage_events.filter(success=False).order_by("-created_at")[:5]
     )
+    processed_documents = UserDocument.objects.filter(status="processed")
+    if user_id is not None:
+        processed_documents = processed_documents.filter(owner_id=user_id)
+    expired_documents = get_expired_processed_documents()
+    if user_id is not None:
+        expired_documents = expired_documents.filter(owner_id=user_id)
 
     return {
         "window_days": 7,
@@ -135,14 +162,46 @@ def build_observability_snapshot(*, user_id: int | None = None) -> dict:
                 for row in top_paths
             ],
         },
-        "research_jobs": research_totals,
-        "document_tasks": document_totals,
+        "research_jobs": {
+            **research_totals,
+            "avg_duration_ms": _duration_to_ms(research_duration["avg_duration"]),
+        },
+        "document_tasks": {
+            **document_totals,
+            "avg_duration_ms": _duration_to_ms(document_duration["avg_duration"]),
+        },
         "usage": {
             "prompt_tokens": usage_totals["prompt_tokens"] or 0,
             "completion_tokens": usage_totals["completion_tokens"] or 0,
             "total_tokens": usage_totals["total_tokens"] or 0,
             "estimated_cost_usd": float(usage_totals["estimated_cost_usd"] or 0),
             "llm_errors": usage_totals["llm_errors"] or 0,
+            "avg_duration_ms": round(usage_totals["avg_duration"] or 0, 2),
+            "providers": [
+                {
+                    "provider": row["provider"],
+                    "model": row["model"],
+                    "calls": row["calls"],
+                    "total_tokens": row["total_tokens"] or 0,
+                    "estimated_cost_usd": float(row["estimated_cost_usd"] or 0),
+                    "errors": row["errors"] or 0,
+                    "avg_duration_ms": round(row["avg_duration"] or 0, 2),
+                }
+                for row in provider_breakdown
+            ],
         },
         "recent_errors": recent_errors[:5],
+        "retention": {
+            "enabled": settings.DOCUMENT_RETENTION_ENABLED,
+            "retention_days": settings.DOCUMENT_RETENTION_DAYS,
+            "processed_documents": processed_documents.count(),
+            "expired_documents": expired_documents.count(),
+        },
     }
+
+
+def _duration_to_ms(value) -> float:
+    if value is None:
+        return 0.0
+    total_seconds = value.total_seconds()
+    return round(total_seconds * 1000, 2)

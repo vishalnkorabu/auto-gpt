@@ -5,8 +5,10 @@ from decimal import Decimal
 from importlib.util import find_spec
 
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase
+from django.utils import timezone
 
 from research_agent.models import SourceDocument, SourceSummary
 from research_agent.presentation import build_presentable_report
@@ -14,6 +16,7 @@ from research_agent.presentation import build_presentable_report
 from .models import (
     ApiRequestLog,
     ConversationMessage,
+    DocumentChunk,
     ConversationSession,
     DocumentTask,
     LLMUsageEvent,
@@ -21,6 +24,7 @@ from .models import (
     UserDocument,
     UserProfile,
 )
+from .retention import cleanup_processed_documents
 
 
 class AuthApiTests(TestCase):
@@ -259,8 +263,70 @@ class SessionApiTests(TestCase):
         payload = response.json()
         self.assertEqual(payload["queue"]["mode"], "thread")
         self.assertEqual(payload["usage"]["total_tokens"], 150)
+        self.assertEqual(payload["usage"]["providers"][0]["provider"], "groq")
         self.assertGreaterEqual(payload["requests"]["total"], 1)
+        self.assertIn("avg_duration_ms", payload["research_jobs"])
+        self.assertIn("retention", payload)
         self.assertTrue(any(item["path"] == "/api/jobs" for item in payload["requests"]["top_paths"]))
+
+    def test_document_detail_is_scoped_to_owner(self) -> None:
+        document = UserDocument.objects.create(
+            owner=self.user,
+            name="private.txt",
+            file_type="txt",
+            content="private content",
+            status="processed",
+        )
+        other_user = User.objects.create_user(username="other", password="secret123")
+        other_client = Client()
+        other_client.login(username="other", password="secret123")
+
+        response = other_client.get(f"/api/documents/{document.id}")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_cleanup_processed_documents_removes_expired_documents(self) -> None:
+        stale_document = UserDocument.objects.create(
+            owner=self.user,
+            name="stale.txt",
+            file_type="txt",
+            content="stale content",
+            status="processed",
+        )
+        fresh_document = UserDocument.objects.create(
+            owner=self.user,
+            name="fresh.txt",
+            file_type="txt",
+            content="fresh content",
+            status="processed",
+        )
+        DocumentChunk.objects.create(document=stale_document, chunk_index=1, content="stale chunk")
+        DocumentChunk.objects.create(document=fresh_document, chunk_index=1, content="fresh chunk")
+        stale_time = timezone.now() - timezone.timedelta(days=45)
+        fresh_time = timezone.now() - timezone.timedelta(days=3)
+        UserDocument.objects.filter(id=stale_document.id).update(updated_at=stale_time)
+        UserDocument.objects.filter(id=fresh_document.id).update(updated_at=fresh_time)
+
+        result = cleanup_processed_documents()
+
+        self.assertEqual(result.deleted_documents, 1)
+        self.assertEqual(result.deleted_chunks, 1)
+        self.assertFalse(UserDocument.objects.filter(id=stale_document.id).exists())
+        self.assertTrue(UserDocument.objects.filter(id=fresh_document.id).exists())
+
+    def test_cleanup_management_command_runs(self) -> None:
+        stale_document = UserDocument.objects.create(
+            owner=self.user,
+            name="command-stale.txt",
+            file_type="txt",
+            content="stale content",
+            status="processed",
+        )
+        UserDocument.objects.filter(id=stale_document.id).update(updated_at=timezone.now() - timezone.timedelta(days=60))
+
+        call_command("cleanup_processed_documents")
+
+        self.assertFalse(UserDocument.objects.filter(id=stale_document.id).exists())
 
     def test_export_message_as_pdf_and_docx(self) -> None:
         session = ConversationSession.objects.create(owner=self.user, title="Healthcare AI", research_depth="standard")
